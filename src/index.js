@@ -62,14 +62,14 @@ async function verifyToken(token, secret) {
   return payload;
 }
 
-// Devuelve { role: 'admin' } o { role: 'docente', id, nombre, email } o null
+// Devuelve { role: 'admin' } o { role: 'docente'|'estudiante', id, nombre, ... } o null
 async function getSession(request, env) {
   const apiKey = request.headers.get("X-API-Key");
   if (apiKey && env.API_KEY && apiKey === env.API_KEY) return { role: "admin" };
   const auth = request.headers.get("Authorization");
   if (auth && auth.startsWith("Bearer ") && env.SESSION_SECRET) {
     const payload = await verifyToken(auth.slice(7), env.SESSION_SECRET);
-    if (payload) return { role: "docente", ...payload };
+    if (payload && payload.role) return payload;
   }
   return null;
 }
@@ -96,17 +96,127 @@ async function handleApi(request, env, url) {
     const hash = await hashPassword(body.password || "", t.salt);
     if (hash !== t.password_hash) return json({ ok: false, error: "Usuario o contraseña incorrectos" }, 401);
     const token = await createToken(
-      { id: t.id, nombre: t.nombre, email: t.email, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 },
+      { role: "docente", id: t.id, nombre: t.nombre, email: t.email, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 },
       env.SESSION_SECRET
     );
     return json({ ok: true, role: "docente", token, nombre: t.nombre });
   }
 
-  // A partir de aquí, todo requiere sesión (admin o docente)
+  // Registro público de docentes (cualquiera puede crear su propia cuenta)
+  if (path === "/register-docente" && method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    if (!b.nombre || !b.email || !b.password) return json({ error: "Faltan datos" }, 400);
+    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    const salt = randomHex();
+    const hash = await hashPassword(b.password, salt);
+    try {
+      const r = await env.DB.prepare(
+        "INSERT INTO teachers (nombre, email, password_hash, salt) VALUES (?, ?, ?, ?)"
+      ).bind(b.nombre, b.email.toLowerCase().trim(), hash, salt).run();
+      const token = await createToken(
+        { role: "docente", id: r.meta.last_row_id, nombre: b.nombre, email: b.email.toLowerCase().trim(), exp: Date.now() + 7 * 24 * 60 * 60 * 1000 },
+        env.SESSION_SECRET
+      );
+      return json({ ok: true, token, nombre: b.nombre });
+    } catch (e) {
+      return json({ error: "Ese email ya está registrado, inicia sesión en vez de registrarte" }, 400);
+    }
+  }
+
+  // Registro público de estudiantes. Si ya existe un registro con el mismo
+  // documento pero sin contraseña (lo creó un admin/docente), lo "reclama".
+  if (path === "/register-estudiante" && method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    if (!b.nombre || !b.documento || !b.password) return json({ error: "Faltan datos (nombre, documento y contraseña)" }, 400);
+    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    const salt = randomHex();
+    const hash = await hashPassword(b.password, salt);
+    const { results } = await env.DB.prepare("SELECT * FROM students WHERE documento = ?").bind(b.documento).all();
+    const existente = results[0];
+    let studentId;
+    if (existente) {
+      if (existente.password_hash) {
+        return json({ error: "Ya existe una cuenta con ese documento, inicia sesión en vez de registrarte" }, 400);
+      }
+      await env.DB.prepare(
+        "UPDATE students SET password_hash = ?, salt = ?, nombre = ?, email = COALESCE(?, email) WHERE id = ?"
+      ).bind(hash, salt, b.nombre, b.email || null, existente.id).run();
+      studentId = existente.id;
+    } else {
+      const r = await env.DB.prepare(
+        "INSERT INTO students (nombre, documento, email, telefono, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?)"
+      ).bind(b.nombre, b.documento, b.email || null, b.telefono || null, hash, salt).run();
+      studentId = r.meta.last_row_id;
+    }
+    const token = await createToken(
+      { role: "estudiante", id: studentId, nombre: b.nombre, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 },
+      env.SESSION_SECRET
+    );
+    return json({ ok: true, token, nombre: b.nombre });
+  }
+
+  // Login de estudiante (documento + contraseña)
+  if (path === "/login-estudiante" && method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM students WHERE documento = ?"
+    ).bind(body.documento || "").all();
+    const s = results[0];
+    if (!s || !s.password_hash) return json({ ok: false, error: "Usuario o contraseña incorrectos" }, 401);
+    const hash = await hashPassword(body.password || "", s.salt);
+    if (hash !== s.password_hash) return json({ ok: false, error: "Usuario o contraseña incorrectos" }, 401);
+    const token = await createToken(
+      { role: "estudiante", id: s.id, nombre: s.nombre, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 },
+      env.SESSION_SECRET
+    );
+    return json({ ok: true, role: "estudiante", token, nombre: s.nombre });
+  }
+
+  // Nombre de un curso, público (para mostrar en la pantalla de check-in antes de iniciar sesión)
+  const publicCourseMatch = path.match(/^\/public\/course\/(\d+)$/);
+  if (publicCourseMatch && method === "GET") {
+    const { results } = await env.DB.prepare("SELECT nombre FROM courses WHERE id = ?").bind(publicCourseMatch[1]).all();
+    return json(results[0] || { nombre: "Curso" });
+  }
+
+  // A partir de aquí, todo requiere sesión (admin, docente o estudiante)
   const session = await getSession(request, env);
   if (!session) return json({ error: "No autorizado" }, 401);
 
-  // ---------- DOCENTES (solo el administrador puede crearlos/listarlos) ----------
+  // ---------- CHECK-IN POR QR ----------
+  // El administrador o docente genera un código de sesión para un curso+fecha
+  if (path === "/attendance/session" && method === "POST") {
+    if (session.role === "estudiante") return json({ error: "No autorizado" }, 403);
+    const b = await request.json().catch(() => ({}));
+    if (!b.course_id || !b.fecha) return json({ error: "Falta course_id o fecha" }, 400);
+    const token = await createToken(
+      { type: "checkin", course_id: b.course_id, fecha: b.fecha, exp: Date.now() + 3 * 60 * 60 * 1000 },
+      env.SESSION_SECRET
+    );
+    return json({ token });
+  }
+  // El estudiante marca su propia asistencia usando el código de la sesión
+  if (path === "/attendance/self" && method === "POST") {
+    if (session.role !== "estudiante") return json({ error: "Solo un estudiante puede marcar su asistencia aquí" }, 403);
+    const b = await request.json().catch(() => ({}));
+    const payload = await verifyToken(b.token || "", env.SESSION_SECRET);
+    if (!payload || payload.type !== "checkin") return json({ error: "Código inválido o vencido" }, 400);
+    const { results } = await env.DB.prepare(
+      "SELECT id FROM enrollments WHERE student_id = ? AND course_id = ?"
+    ).bind(session.id, payload.course_id).all();
+    if (!results[0]) return json({ error: "No estás inscrito en ese curso" }, 403);
+    await env.DB.prepare(
+      `INSERT INTO attendance (enrollment_id, fecha, estado) VALUES (?, ?, 'presente')
+       ON CONFLICT(enrollment_id, fecha) DO UPDATE SET estado = 'presente'`
+    ).bind(results[0].id, payload.fecha).run();
+    const curso = await env.DB.prepare("SELECT nombre FROM courses WHERE id = ?").bind(payload.course_id).all();
+    return json({ ok: true, curso: curso.results[0]?.nombre || "curso", fecha: payload.fecha });
+  }
+
+  // Un estudiante solo puede usar el check-in (arriba). El resto es para admin/docente.
+  if (session.role === "estudiante") return json({ error: "No autorizado" }, 403);
+
+  // ---------- DOCENTES (solo el administrador puede listarlos/eliminarlos) ----------
   if (path === "/teachers" && method === "GET") {
     if (session.role !== "admin") return json({ error: "Solo el administrador puede ver esto" }, 403);
     const { results } = await env.DB.prepare(
@@ -114,8 +224,15 @@ async function handleApi(request, env, url) {
     ).all();
     return json(results);
   }
+  const teacherDeleteMatch = path.match(/^\/teachers\/(\d+)$/);
+  if (teacherDeleteMatch && method === "DELETE") {
+    if (session.role !== "admin") return json({ error: "Solo el administrador puede eliminar docentes" }, 403);
+    await env.DB.prepare("DELETE FROM teachers WHERE id = ?").bind(teacherDeleteMatch[1]).run();
+    return json({ ok: true });
+  }
+  // El administrador también puede seguir creando docentes manualmente
   if (path === "/teachers" && method === "POST") {
-    if (session.role !== "admin") return json({ error: "Solo el administrador puede crear docentes" }, 403);
+    if (session.role !== "admin") return json({ error: "Solo el administrador puede crear docentes así" }, 403);
     const b = await request.json();
     if (!b.nombre || !b.email || !b.password) return json({ error: "Faltan datos" }, 400);
     if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
@@ -129,12 +246,6 @@ async function handleApi(request, env, url) {
     } catch (e) {
       return json({ error: "Ese email ya está registrado" }, 400);
     }
-  }
-  const teacherDeleteMatch = path.match(/^\/teachers\/(\d+)$/);
-  if (teacherDeleteMatch && method === "DELETE") {
-    if (session.role !== "admin") return json({ error: "Solo el administrador puede eliminar docentes" }, 403);
-    await env.DB.prepare("DELETE FROM teachers WHERE id = ?").bind(teacherDeleteMatch[1]).run();
-    return json({ ok: true });
   }
 
   // ---------- CURSOS ----------
@@ -330,17 +441,48 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 <div id="loginScreen" class="card">
   <h2>🔑 Acceso</h2>
-  <nav style="margin-bottom:16px">
-    <button id="loginTabDocente" class="active" onclick="mostrarLogin('docente')">Soy docente</button>
-    <button id="loginTabAdmin" onclick="mostrarLogin('admin')">Soy administrador</button>
+  <nav style="margin-bottom:16px" id="loginRoleTabs">
+    <button id="loginTabEstudiante" class="active" onclick="mostrarLogin('estudiante')">Estudiante</button>
+    <button id="loginTabDocente" onclick="mostrarLogin('docente')">Docente</button>
+    <button id="loginTabAdmin" onclick="mostrarLogin('admin')">Administrador</button>
   </nav>
 
-  <div id="loginDocente">
-    <div class="field"><label>Email</label><input id="docenteEmail" type="email" placeholder="tu@correo.com"></div>
-    <div class="field"><label>Contraseña</label><input id="docentePass" type="password"></div>
-    <button class="primary" onclick="loginDocente()" style="width:100%">Entrar</button>
+  <!-- ESTUDIANTE -->
+  <div id="loginEstudiante">
+    <div id="estIniciar">
+      <div class="field"><label>Documento</label><input id="estLoginDoc" placeholder="Tu número de documento"></div>
+      <div class="field"><label>Contraseña</label><input id="estLoginPass" type="password"></div>
+      <button class="primary" onclick="loginEstudiante()" style="width:100%">Entrar</button>
+      <p class="muted" style="margin-top:10px">¿No tienes cuenta? <a href="#" onclick="toggleEstudianteForm('registro');return false">Regístrate aquí</a></p>
+    </div>
+    <div id="estRegistro" class="hidden">
+      <div class="field"><label>Nombre completo</label><input id="estRegNombre"></div>
+      <div class="field"><label>Documento</label><input id="estRegDoc" placeholder="El mismo que usó tu profesor al inscribirte"></div>
+      <div class="field"><label>Email (opcional)</label><input id="estRegEmail" type="email"></div>
+      <div class="field"><label>Contraseña (mínimo 6 caracteres)</label><input id="estRegPass" type="password"></div>
+      <button class="primary" onclick="registrarEstudiante()" style="width:100%">Crear cuenta</button>
+      <p class="muted" style="margin-top:10px">¿Ya tienes cuenta? <a href="#" onclick="toggleEstudianteForm('login');return false">Inicia sesión</a></p>
+    </div>
   </div>
 
+  <!-- DOCENTE -->
+  <div id="loginDocente" class="hidden">
+    <div id="docIniciar">
+      <div class="field"><label>Email</label><input id="docenteEmail" type="email" placeholder="tu@correo.com"></div>
+      <div class="field"><label>Contraseña</label><input id="docentePass" type="password"></div>
+      <button class="primary" onclick="loginDocente()" style="width:100%">Entrar</button>
+      <p class="muted" style="margin-top:10px">¿No tienes cuenta? <a href="#" onclick="toggleDocenteForm('registro');return false">Regístrate aquí</a></p>
+    </div>
+    <div id="docRegistro" class="hidden">
+      <div class="field"><label>Nombre completo</label><input id="docRegNombre"></div>
+      <div class="field"><label>Email</label><input id="docRegEmail" type="email"></div>
+      <div class="field"><label>Contraseña (mínimo 6 caracteres)</label><input id="docRegPass" type="password"></div>
+      <button class="primary" onclick="registrarDocente()" style="width:100%">Crear cuenta</button>
+      <p class="muted" style="margin-top:10px">¿Ya tienes cuenta? <a href="#" onclick="toggleDocenteForm('login');return false">Inicia sesión</a></p>
+    </div>
+  </div>
+
+  <!-- ADMIN -->
   <div id="loginAdmin" class="hidden">
     <p class="muted">Ingresa la clave de acceso maestra configurada en el Worker.</p>
     <div class="field"><input id="apiKeyInput" type="password" placeholder="Clave de acceso"></div>
@@ -348,6 +490,12 @@ const HTML_PAGE = `<!DOCTYPE html>
   </div>
 
   <div id="loginMsg" class="msg"></div>
+</div>
+
+<!-- PANTALLA DE CHECK-IN (para el QR de asistencia) -->
+<div id="checkinScreen" class="card hidden" style="max-width:360px;margin:80px auto;text-align:center">
+  <h2 id="checkinTitulo">📷 Registrar asistencia</h2>
+  <div id="checkinContenido"></div>
 </div>
 
 <div id="app" class="hidden">
@@ -431,6 +579,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         <button class="primary" onclick="guardarAsistencia()" style="margin-top:12px">Guardar asistencia</button>
         <div id="asisMsg" class="msg"></div>
       </div>
+      <div class="card">
+        <h2>📷 Código QR para que los estudiantes marquen solos</h2>
+        <p class="muted">Genera un código para el curso y la fecha seleccionados arriba. Los estudiantes lo escanean con su celular, inician sesión (o se registran) y su asistencia queda marcada como "presente" automáticamente.</p>
+        <button class="primary" onclick="generarQR()">Generar código QR</button>
+        <div id="qrResultado" style="margin-top:16px"></div>
+      </div>
     </section>
 
     <section id="tab-historial" class="hidden">
@@ -464,11 +618,12 @@ const HTML_PAGE = `<!DOCTYPE html>
 </div>
 
 <script>
-let ROLE = localStorage.getItem('asistencia_role') || '';       // 'admin' o 'docente'
+let ROLE = localStorage.getItem('asistencia_role') || '';       // 'admin', 'docente' o 'estudiante'
 let API_KEY = localStorage.getItem('asistencia_key') || '';     // solo si ROLE === 'admin'
-let TOKEN = localStorage.getItem('asistencia_token') || '';     // solo si ROLE === 'docente'
+let TOKEN = localStorage.getItem('asistencia_token') || '';     // solo si ROLE === 'docente' o 'estudiante'
 let courses = [], students = [];
 const estados = ['presente','ausente','tarde','justificado'];
+const CHECKIN_TOKEN = new URLSearchParams(location.search).get('checkin');
 
 function authHeaders() {
   if (ROLE === 'admin') return { 'X-API-Key': API_KEY };
@@ -489,22 +644,61 @@ async function api(path, opts = {}) {
 
 function showLogin(msg) {
   document.getElementById('app').classList.add('hidden');
+  document.getElementById('checkinScreen').classList.add('hidden');
   document.getElementById('loginScreen').classList.remove('hidden');
   if (msg) { document.getElementById('loginMsg').textContent = msg; document.getElementById('loginMsg').className='msg bad'; }
 }
 
 function mostrarLogin(tipo) {
+  document.getElementById('loginTabEstudiante').classList.toggle('active', tipo==='estudiante');
   document.getElementById('loginTabDocente').classList.toggle('active', tipo==='docente');
   document.getElementById('loginTabAdmin').classList.toggle('active', tipo==='admin');
+  document.getElementById('loginEstudiante').classList.toggle('hidden', tipo!=='estudiante');
   document.getElementById('loginDocente').classList.toggle('hidden', tipo!=='docente');
   document.getElementById('loginAdmin').classList.toggle('hidden', tipo!=='admin');
+  document.getElementById('loginMsg').textContent = '';
+}
+function toggleEstudianteForm(cual) {
+  document.getElementById('estIniciar').classList.toggle('hidden', cual!=='login');
+  document.getElementById('estRegistro').classList.toggle('hidden', cual!=='registro');
+}
+function toggleDocenteForm(cual) {
+  document.getElementById('docIniciar').classList.toggle('hidden', cual!=='login');
+  document.getElementById('docRegistro').classList.toggle('hidden', cual!=='registro');
 }
 
 function entrarComo(role) {
   document.getElementById('loginScreen').classList.add('hidden');
+  if (role === 'estudiante') {
+    procesarPantallaEstudiante();
+    return;
+  }
   document.getElementById('app').classList.remove('hidden');
   document.getElementById('tabBtnDocentes').classList.toggle('hidden', role !== 'admin');
   initApp();
+}
+
+// Lo que ve un estudiante después de iniciar sesión: si viene de un código QR,
+// marca su asistencia automáticamente. Si no, le mostramos un mensaje simple.
+async function procesarPantallaEstudiante() {
+  document.getElementById('checkinScreen').classList.remove('hidden');
+  const cont = document.getElementById('checkinContenido');
+  if (!CHECKIN_TOKEN) {
+    document.getElementById('checkinTitulo').textContent = '👋 ¡Hola!';
+    cont.innerHTML = '<p class="muted">Ya iniciaste sesión. Para marcar tu asistencia, escanea el código QR que te muestre tu profesor en clase.</p>' +
+      '<button class="primary" onclick="cerrarSesion()" style="margin-top:10px">Cerrar sesión</button>';
+    return;
+  }
+  cont.innerHTML = '<p class="muted">Registrando tu asistencia...</p>';
+  try {
+    const data = await api('/attendance/self', { method:'POST', body: JSON.stringify({ token: CHECKIN_TOKEN }) });
+    document.getElementById('checkinTitulo').textContent = '✅ ¡Asistencia registrada!';
+    cont.innerHTML = \`<p>Quedaste marcado como <b>presente</b> en <b>\${data.curso}</b> el \${data.fecha}.</p>
+      <button class="primary" onclick="cerrarSesion()" style="margin-top:10px">Listo</button>\`;
+  } catch (e) {
+    document.getElementById('checkinTitulo').textContent = '⚠️ No se pudo registrar';
+    cont.innerHTML = \`<p class="muted">\${e.message}</p><button class="primary" onclick="cerrarSesion()" style="margin-top:10px">Volver</button>\`;
+  }
 }
 
 async function login() {
@@ -541,6 +735,62 @@ async function loginDocente() {
 function cerrarSesion() {
   localStorage.removeItem('asistencia_role'); localStorage.removeItem('asistencia_key'); localStorage.removeItem('asistencia_token');
   location.reload();
+}
+
+async function loginEstudiante() {
+  const documento = document.getElementById('estLoginDoc').value.trim();
+  const password = document.getElementById('estLoginPass').value;
+  const res = await fetch('/api/login-estudiante', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({documento,password}) });
+  const data = await res.json();
+  if (data.ok) { guardarSesionEstudiante(data.token); entrarComo('estudiante'); }
+  else { document.getElementById('loginMsg').textContent = data.error || 'No se pudo iniciar sesión'; document.getElementById('loginMsg').className = 'msg bad'; }
+}
+async function registrarEstudiante() {
+  const nombre = document.getElementById('estRegNombre').value.trim();
+  const documento = document.getElementById('estRegDoc').value.trim();
+  const email = document.getElementById('estRegEmail').value.trim();
+  const password = document.getElementById('estRegPass').value;
+  const res = await fetch('/api/register-estudiante', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({nombre,documento,email,password}) });
+  const data = await res.json();
+  if (data.ok) { guardarSesionEstudiante(data.token); entrarComo('estudiante'); }
+  else { document.getElementById('loginMsg').textContent = data.error || 'No se pudo registrar'; document.getElementById('loginMsg').className = 'msg bad'; }
+}
+function guardarSesionEstudiante(token) {
+  ROLE = 'estudiante'; TOKEN = token;
+  localStorage.setItem('asistencia_role','estudiante'); localStorage.setItem('asistencia_token', token);
+  localStorage.removeItem('asistencia_key');
+}
+
+async function registrarDocente() {
+  const nombre = document.getElementById('docRegNombre').value.trim();
+  const email = document.getElementById('docRegEmail').value.trim();
+  const password = document.getElementById('docRegPass').value;
+  const res = await fetch('/api/register-docente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({nombre,email,password}) });
+  const data = await res.json();
+  if (data.ok) {
+    ROLE = 'docente'; TOKEN = data.token;
+    localStorage.setItem('asistencia_role','docente'); localStorage.setItem('asistencia_token', data.token);
+    localStorage.removeItem('asistencia_key');
+    entrarComo('docente');
+  } else { document.getElementById('loginMsg').textContent = data.error || 'No se pudo registrar'; document.getElementById('loginMsg').className = 'msg bad'; }
+}
+
+// ---- Código QR de check-in ----
+async function generarQR() {
+  const course_id = document.getElementById('asisCurso').value;
+  const fecha = document.getElementById('asisFecha').value;
+  const cont = document.getElementById('qrResultado');
+  if (!course_id || !fecha) { cont.innerHTML = '<p class="msg bad">Selecciona un curso y una fecha primero</p>'; return; }
+  try {
+    const data = await api('/attendance/session', { method:'POST', body: JSON.stringify({ course_id, fecha }) });
+    const url = location.origin + '/?checkin=' + encodeURIComponent(data.token);
+    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+    cont.innerHTML = \`
+      <img src="\${qrImg}" alt="Código QR" style="border:1px solid var(--border);border-radius:8px">
+      <p class="muted" style="margin-top:10px">O comparte este enlace directamente (válido por 3 horas):</p>
+      <input readonly value="\${url}" onclick="this.select()" style="margin-top:4px">
+    \`;
+  } catch (e) { cont.innerHTML = '<p class="msg bad">'+e.message+'</p>'; }
 }
 
 document.querySelectorAll('#app nav button').forEach(btn => {
@@ -710,14 +960,18 @@ initApp = async function() {
   if (ROLE === 'admin') cargarDocentes();
 };
 
+// Si venimos de un enlace de QR, mostramos primero la pestaña de estudiante
+if (CHECKIN_TOKEN) mostrarLogin('estudiante');
+
 // Auto-login si ya hay sesión guardada
 if (ROLE === 'admin' && API_KEY) {
   fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({apiKey:API_KEY}) })
     .then(r=>r.json()).then(d => { if (d.ok) entrarComo('admin'); });
 } else if (ROLE === 'docente' && TOKEN) {
-  // Verificamos el token intentando cargar los cursos
   fetch('/api/courses', { headers: { 'Authorization': 'Bearer ' + TOKEN } })
     .then(r => { if (r.ok) entrarComo('docente'); });
+} else if (ROLE === 'estudiante' && TOKEN) {
+  entrarComo('estudiante');
 }
 </script>
 </body>

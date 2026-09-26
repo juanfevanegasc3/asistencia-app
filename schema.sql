@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS students (
   documento TEXT UNIQUE,
   email TEXT,
   telefono TEXT,
+  password_hash TEXT,
+  salt TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
