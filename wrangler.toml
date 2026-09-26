@@ -8,7 +8,4 @@ binding = "DB"
 database_name = "asistencia_db"
 database_id = "f8333832-2b67-4433-a2e3-334b472a87a1"
 
-# Cambia esta clave por una tuya antes de desplegar.
-# Es la "contraseña" que se pedirá en la página para poder editar datos.
-[vars]
-API_KEY = "jfvc1030"
+
