@@ -1,0 +1,14 @@
+name = "asistencia-app"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Se completa automáticamente al crear la base de datos (ver README paso 3)
+[[d1_databases]]
+binding = "DB"
+database_name = "asistencia_db"
+database_id = "f8333832-2b67-4433-a2e3-334b472a87a1"
+
+# Cambia esta clave por una tuya antes de desplegar.
+# Es la "contraseña" que se pedirá en la página para poder editar datos.
+[vars]
+API_KEY = "jfvc1030"
