@@ -14,20 +14,127 @@ function isAuthorized(request, env) {
   return key && env.API_KEY && key === env.API_KEY;
 }
 
+// ---------- Contraseñas (PBKDF2) ----------
+function bufToHex(buf) {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function hexToBuf(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  return bytes;
+}
+function randomHex(bytes = 16) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return bufToHex(arr);
+}
+async function hashPassword(password, saltHex) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: hexToBuf(saltHex), iterations: 100000, hash: "SHA-256" },
+    keyMaterial, 256
+  );
+  return bufToHex(bits);
+}
+
+// ---------- Tokens de sesión (firmados con HMAC) ----------
+function b64url(str) { return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function unb64url(str) { return atob(str.replace(/-/g, "+").replace(/_/g, "/")); }
+async function hmacKey(secret) {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+async function createToken(payload, secret) {
+  const body = b64url(JSON.stringify(payload));
+  const key = await hmacKey(secret);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return body + "." + b64url(String.fromCharCode(...new Uint8Array(sig)));
+}
+async function verifyToken(token, secret) {
+  if (!token || !token.includes(".")) return null;
+  const [body, sig] = token.split(".");
+  const key = await hmacKey(secret);
+  const sigBytes = Uint8Array.from(unb64url(sig), (c) => c.charCodeAt(0));
+  const valid = await crypto.subtle.verify("HMAC", key, sigBytes, new TextEncoder().encode(body));
+  if (!valid) return null;
+  const payload = JSON.parse(unb64url(body));
+  if (payload.exp && Date.now() > payload.exp) return null;
+  return payload;
+}
+
+// Devuelve { role: 'admin' } o { role: 'docente', id, nombre, email } o null
+async function getSession(request, env) {
+  const apiKey = request.headers.get("X-API-Key");
+  if (apiKey && env.API_KEY && apiKey === env.API_KEY) return { role: "admin" };
+  const auth = request.headers.get("Authorization");
+  if (auth && auth.startsWith("Bearer ") && env.SESSION_SECRET) {
+    const payload = await verifyToken(auth.slice(7), env.SESSION_SECRET);
+    if (payload) return { role: "docente", ...payload };
+  }
+  return null;
+}
+
 async function handleApi(request, env, url) {
   const path = url.pathname.replace(/^\/api/, "");
   const method = request.method;
 
-  // Login (solo valida la clave)
+  // Login como administrador (con la clave maestra)
   if (path === "/login" && method === "POST") {
     const body = await request.json().catch(() => ({}));
-    if (body.apiKey === env.API_KEY) return json({ ok: true });
+    if (body.apiKey === env.API_KEY) return json({ ok: true, role: "admin" });
     return json({ ok: false, error: "Clave incorrecta" }, 401);
   }
 
-  // A partir de aquí, todo requiere autorización
-  if (!isAuthorized(request, env)) {
-    return json({ error: "No autorizado" }, 401);
+  // Login como docente (email + contraseña) -> devuelve un token de sesión
+  if (path === "/login-docente" && method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM teachers WHERE email = ?"
+    ).bind((body.email || "").toLowerCase().trim()).all();
+    const t = results[0];
+    if (!t) return json({ ok: false, error: "Usuario o contraseña incorrectos" }, 401);
+    const hash = await hashPassword(body.password || "", t.salt);
+    if (hash !== t.password_hash) return json({ ok: false, error: "Usuario o contraseña incorrectos" }, 401);
+    const token = await createToken(
+      { id: t.id, nombre: t.nombre, email: t.email, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 },
+      env.SESSION_SECRET
+    );
+    return json({ ok: true, role: "docente", token, nombre: t.nombre });
+  }
+
+  // A partir de aquí, todo requiere sesión (admin o docente)
+  const session = await getSession(request, env);
+  if (!session) return json({ error: "No autorizado" }, 401);
+
+  // ---------- DOCENTES (solo el administrador puede crearlos/listarlos) ----------
+  if (path === "/teachers" && method === "GET") {
+    if (session.role !== "admin") return json({ error: "Solo el administrador puede ver esto" }, 403);
+    const { results } = await env.DB.prepare(
+      "SELECT id, nombre, email, created_at FROM teachers ORDER BY nombre"
+    ).all();
+    return json(results);
+  }
+  if (path === "/teachers" && method === "POST") {
+    if (session.role !== "admin") return json({ error: "Solo el administrador puede crear docentes" }, 403);
+    const b = await request.json();
+    if (!b.nombre || !b.email || !b.password) return json({ error: "Faltan datos" }, 400);
+    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    const salt = randomHex();
+    const hash = await hashPassword(b.password, salt);
+    try {
+      const r = await env.DB.prepare(
+        "INSERT INTO teachers (nombre, email, password_hash, salt) VALUES (?, ?, ?, ?)"
+      ).bind(b.nombre, b.email.toLowerCase().trim(), hash, salt).run();
+      return json({ id: r.meta.last_row_id });
+    } catch (e) {
+      return json({ error: "Ese email ya está registrado" }, 400);
+    }
+  }
+  const teacherDeleteMatch = path.match(/^\/teachers\/(\d+)$/);
+  if (teacherDeleteMatch && method === "DELETE") {
+    if (session.role !== "admin") return json({ error: "Solo el administrador puede eliminar docentes" }, 403);
+    await env.DB.prepare("DELETE FROM teachers WHERE id = ?").bind(teacherDeleteMatch[1]).run();
+    return json({ ok: true });
   }
 
   // ---------- CURSOS ----------
@@ -223,14 +330,31 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 <div id="loginScreen" class="card">
   <h2>🔑 Acceso</h2>
-  <p class="muted">Ingresa la clave de acceso configurada en el Worker.</p>
-  <div class="field"><input id="apiKeyInput" type="password" placeholder="Clave de acceso"></div>
-  <button class="primary" onclick="login()" style="width:100%">Entrar</button>
+  <nav style="margin-bottom:16px">
+    <button id="loginTabDocente" class="active" onclick="mostrarLogin('docente')">Soy docente</button>
+    <button id="loginTabAdmin" onclick="mostrarLogin('admin')">Soy administrador</button>
+  </nav>
+
+  <div id="loginDocente">
+    <div class="field"><label>Email</label><input id="docenteEmail" type="email" placeholder="tu@correo.com"></div>
+    <div class="field"><label>Contraseña</label><input id="docentePass" type="password"></div>
+    <button class="primary" onclick="loginDocente()" style="width:100%">Entrar</button>
+  </div>
+
+  <div id="loginAdmin" class="hidden">
+    <p class="muted">Ingresa la clave de acceso maestra configurada en el Worker.</p>
+    <div class="field"><input id="apiKeyInput" type="password" placeholder="Clave de acceso"></div>
+    <button class="primary" onclick="login()" style="width:100%">Entrar</button>
+  </div>
+
   <div id="loginMsg" class="msg"></div>
 </div>
 
 <div id="app" class="hidden">
-  <header>📋 Sistema de Asistencia</header>
+  <header style="display:flex;justify-content:space-between;align-items:center">
+    <span>📋 Sistema de Asistencia</span>
+    <button onclick="cerrarSesion()" style="background:rgba(255,255,255,0.15);color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px">Cerrar sesión</button>
+  </header>
   <div class="wrap">
     <nav>
       <button data-tab="cursos" class="active">Cursos</button>
@@ -238,6 +362,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button data-tab="inscripciones">Inscripciones</button>
       <button data-tab="asistencia">Tomar Asistencia</button>
       <button data-tab="historial">Historial</button>
+      <button data-tab="docentes" id="tabBtnDocentes" class="hidden">Docentes</button>
     </nav>
 
     <section id="tab-cursos">
@@ -316,18 +441,45 @@ const HTML_PAGE = `<!DOCTYPE html>
           <tbody id="listaHistorial"></tbody></table>
       </div>
     </section>
+
+    <section id="tab-docentes" class="hidden">
+      <div class="card">
+        <h2>Registrar docente</h2>
+        <p class="muted">Los docentes que registres aquí podrán entrar con su propio email y contraseña, sin necesitar la clave maestra.</p>
+        <div class="row">
+          <div class="field"><label>Nombre</label><input id="docNombre"></div>
+          <div class="field"><label>Email</label><input id="docEmail" type="email"></div>
+        </div>
+        <div class="field"><label>Contraseña (mínimo 6 caracteres)</label><input id="docPass" type="password"></div>
+        <button class="primary" onclick="crearDocente()">Registrar docente</button>
+        <div id="docMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>Docentes registrados</h2>
+        <table><thead><tr><th>Nombre</th><th>Email</th><th></th></tr></thead>
+          <tbody id="listaDocentes"></tbody></table>
+      </div>
+    </section>
   </div>
 </div>
 
 <script>
-let API_KEY = localStorage.getItem('asistencia_key') || '';
+let ROLE = localStorage.getItem('asistencia_role') || '';       // 'admin' o 'docente'
+let API_KEY = localStorage.getItem('asistencia_key') || '';     // solo si ROLE === 'admin'
+let TOKEN = localStorage.getItem('asistencia_token') || '';     // solo si ROLE === 'docente'
 let courses = [], students = [];
 const estados = ['presente','ausente','tarde','justificado'];
+
+function authHeaders() {
+  if (ROLE === 'admin') return { 'X-API-Key': API_KEY };
+  if (ROLE === 'docente') return { 'Authorization': 'Bearer ' + TOKEN };
+  return {};
+}
 
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY, ...(opts.headers||{}) }
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(opts.headers||{}) }
   });
   if (res.status === 401) { showLogin('Sesión inválida, ingresa de nuevo.'); throw new Error('401'); }
   const data = await res.json();
@@ -341,19 +493,54 @@ function showLogin(msg) {
   if (msg) { document.getElementById('loginMsg').textContent = msg; document.getElementById('loginMsg').className='msg bad'; }
 }
 
+function mostrarLogin(tipo) {
+  document.getElementById('loginTabDocente').classList.toggle('active', tipo==='docente');
+  document.getElementById('loginTabAdmin').classList.toggle('active', tipo==='admin');
+  document.getElementById('loginDocente').classList.toggle('hidden', tipo!=='docente');
+  document.getElementById('loginAdmin').classList.toggle('hidden', tipo!=='admin');
+}
+
+function entrarComo(role) {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('tabBtnDocentes').classList.toggle('hidden', role !== 'admin');
+  initApp();
+}
+
 async function login() {
   const key = document.getElementById('apiKeyInput').value;
   const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({apiKey:key}) });
   const data = await res.json();
   if (data.ok) {
-    API_KEY = key; localStorage.setItem('asistencia_key', key);
-    document.getElementById('loginScreen').classList.add('hidden');
-    document.getElementById('app').classList.remove('hidden');
-    initApp();
+    ROLE = 'admin'; API_KEY = key;
+    localStorage.setItem('asistencia_role','admin'); localStorage.setItem('asistencia_key', key);
+    localStorage.removeItem('asistencia_token');
+    entrarComo('admin');
   } else {
     document.getElementById('loginMsg').textContent = 'Clave incorrecta';
     document.getElementById('loginMsg').className = 'msg bad';
   }
+}
+
+async function loginDocente() {
+  const email = document.getElementById('docenteEmail').value;
+  const password = document.getElementById('docentePass').value;
+  const res = await fetch('/api/login-docente', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email,password}) });
+  const data = await res.json();
+  if (data.ok) {
+    ROLE = 'docente'; TOKEN = data.token;
+    localStorage.setItem('asistencia_role','docente'); localStorage.setItem('asistencia_token', data.token);
+    localStorage.removeItem('asistencia_key');
+    entrarComo('docente');
+  } else {
+    document.getElementById('loginMsg').textContent = data.error || 'No se pudo iniciar sesión';
+    document.getElementById('loginMsg').className = 'msg bad';
+  }
+}
+
+function cerrarSesion() {
+  localStorage.removeItem('asistencia_role'); localStorage.removeItem('asistencia_key'); localStorage.removeItem('asistencia_token');
+  location.reload();
 }
 
 document.querySelectorAll('nav button').forEach(btn => {
@@ -379,6 +566,7 @@ async function cargarCursos() {
   ).join('') || '<tr><td class="muted" colspan="3">Sin cursos aún</td></tr>';
   const opts = courses.map(c => \`<option value="\${c.id}">\${c.nombre}</option>\`).join('');
   ['inscCurso','verCurso','asisCurso','histCurso'].forEach(id => document.getElementById(id).innerHTML = opts);
+  if (courses.length) { cargarInscritos(); cargarAsistencia(); cargarHistorial(); }
 }
 async function crearCurso() {
   const nombre = document.getElementById('cursoNombre').value.trim();
@@ -423,10 +611,14 @@ async function inscribir() {
   const course_id = document.getElementById('inscCurso').value;
   const student_id = document.getElementById('inscEstudiante').value;
   const msgEl = document.getElementById('inscMsg');
+  if (!course_id || !student_id) {
+    msgEl.textContent = 'Registra al menos un curso y un estudiante primero'; msgEl.className='msg bad'; return;
+  }
   try {
     await api('/enrollments', { method:'POST', body: JSON.stringify({ course_id, student_id }) });
-    msgEl.textContent = 'Inscrito correctamente'; msgEl.className='msg ok';
-    if (document.getElementById('verCurso').value === course_id) cargarInscritos();
+    msgEl.textContent = 'Inscrito correctamente ✓'; msgEl.className='msg ok';
+    document.getElementById('verCurso').value = course_id;
+    await cargarInscritos();
   } catch(e) { msgEl.textContent = e.message; msgEl.className='msg bad'; }
 }
 async function cargarInscritos() {
@@ -484,12 +676,48 @@ async function cargarHistorial() {
   ).join('') || '<tr><td class="muted" colspan="3">Sin registros aún</td></tr>';
 }
 
-// Auto-login si ya hay clave guardada
-if (API_KEY) {
+// ---- Docentes (solo administrador) ----
+async function cargarDocentes() {
+  if (ROLE !== 'admin') return;
+  const list = await api('/teachers');
+  document.getElementById('listaDocentes').innerHTML = list.map(d =>
+    \`<tr><td>\${d.nombre}</td><td class="muted">\${d.email}</td>
+     <td><button class="danger" onclick="borrarDocente(\${d.id})">Eliminar</button></td></tr>\`
+  ).join('') || '<tr><td class="muted" colspan="3">Sin docentes registrados aún</td></tr>';
+}
+async function crearDocente() {
+  const nombre = document.getElementById('docNombre').value.trim();
+  const email = document.getElementById('docEmail').value.trim();
+  const password = document.getElementById('docPass').value;
+  const msgEl = document.getElementById('docMsg');
+  if (!nombre || !email || !password) { msgEl.textContent='Completa todos los campos'; msgEl.className='msg bad'; return; }
+  try {
+    await api('/teachers', { method:'POST', body: JSON.stringify({ nombre, email, password }) });
+    msgEl.textContent = 'Docente registrado ✓'; msgEl.className='msg ok';
+    ['docNombre','docEmail','docPass'].forEach(id=>document.getElementById(id).value='');
+    await cargarDocentes();
+  } catch(e) { msgEl.textContent = e.message; msgEl.className='msg bad'; }
+}
+async function borrarDocente(id) {
+  if (!confirm('¿Eliminar este docente?')) return;
+  await api('/teachers/'+id, { method:'DELETE' }); await cargarDocentes();
+}
+
+// Añade la carga de docentes cuando se entra como admin
+const initAppOriginal = initApp;
+initApp = async function() {
+  await initAppOriginal();
+  if (ROLE === 'admin') cargarDocentes();
+};
+
+// Auto-login si ya hay sesión guardada
+if (ROLE === 'admin' && API_KEY) {
   fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({apiKey:API_KEY}) })
-    .then(r=>r.json()).then(d => {
-      if (d.ok) { document.getElementById('loginScreen').classList.add('hidden'); document.getElementById('app').classList.remove('hidden'); initApp(); }
-    });
+    .then(r=>r.json()).then(d => { if (d.ok) entrarComo('admin'); });
+} else if (ROLE === 'docente' && TOKEN) {
+  // Verificamos el token intentando cargar los cursos
+  fetch('/api/courses', { headers: { 'Authorization': 'Bearer ' + TOKEN } })
+    .then(r => { if (r.ok) entrarComo('docente'); });
 }
 </script>
 </body>

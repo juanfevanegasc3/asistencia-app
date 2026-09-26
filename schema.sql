@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS attendance (
   UNIQUE(enrollment_id, fecha)
 );
 
+CREATE TABLE IF NOT EXISTS teachers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_enrollments_course ON enrollments(course_id);
 CREATE INDEX IF NOT EXISTS idx_enrollments_student ON enrollments(student_id);
 CREATE INDEX IF NOT EXISTS idx_attendance_fecha ON attendance(fecha);
