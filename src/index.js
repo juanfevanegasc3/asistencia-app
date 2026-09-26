@@ -543,11 +543,11 @@ function cerrarSesion() {
   location.reload();
 }
 
-document.querySelectorAll('nav button').forEach(btn => {
+document.querySelectorAll('#app nav button').forEach(btn => {
   btn.onclick = () => {
-    document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('#app nav button').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
-    document.querySelectorAll('section').forEach(s=>s.classList.add('hidden'));
+    document.querySelectorAll('#app section').forEach(s=>s.classList.add('hidden'));
     document.getElementById('tab-'+btn.dataset.tab).classList.remove('hidden');
   };
 });
