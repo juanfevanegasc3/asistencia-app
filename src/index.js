@@ -481,6 +481,7 @@ export default {
   },
 };
 
+
 // ==========================================================
 // FRONTEND (HTML + CSS + JS embebido)
 // ==========================================================
@@ -489,118 +490,224 @@ const HTML_PAGE = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asistencia de cursos</title>
+<meta name="theme-color" content="#0b1220">
+<title>Asistencia · Panel académico</title>
 <style>
   :root{
-    --pizarra:#14332b; --pizarra2:#1d4a3d; --verde:#1f7a5c; --verde2:#17634a; --tiza:#f2c75c;
-    --fondo:#edf1ef; --card:#fff; --texto:#16231f; --muted:#5e6d67; --borde:#d9e1dd;
-    --ok:#1b7f4f; --okbg:#dff3e8; --bad:#b42318; --badbg:#fde4e1;
-    --warn:#8a5a00; --warnbg:#fff1cc; --info:#2a5db0; --infobg:#e1ebfb;
+    --bg:#f4f6fa; --surface:#fff; --surface-soft:#f8fafc;
+    --ink:#0f172a; --ink-2:#334155; --muted:#64748b;
+    --line:#e5eaf1; --line-strong:#cbd5e1;
+    --brand:#0f766e; --brand-2:#0d9488; --brand-ink:#134e4a; --brand-soft:#e6fffa;
+    --sidebar:#0b1220; --sidebar-2:#111c2e;
+    --ok:#15803d; --ok-bg:#e8f7ee; --bad:#b91c1c; --bad-bg:#fee2e2;
+    --warn:#b45309; --warn-bg:#fef3c7; --info:#1d4ed8; --info-bg:#e0e7ff;
+    --radius:16px; --radius-sm:10px;
+    --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+    --shadow:0 10px 34px rgba(15,23,42,.09);
   }
   *{box-sizing:border-box}
   html{-webkit-text-size-adjust:100%}
-  body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--fondo);color:var(--texto)}
-  h1,h2,h3{font-family:Georgia,"Iowan Old Style","Times New Roman",serif;font-weight:700;margin:0}
-  h2{font-size:19px;margin-bottom:14px}
-  a{color:var(--verde2)}
+  body{margin:0;font:15px/1.55 "Segoe UI",system-ui,-apple-system,Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.02em;line-height:1.2}
+  h2{font-size:16.5px}
+  p{margin:0}
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
   .hidden{display:none!important}
-  .muted{color:var(--muted);font-size:13px}
-  :focus-visible{outline:3px solid var(--tiza);outline-offset:2px}
+  .muted{color:var(--muted);font-size:13.5px}
+  :focus-visible{outline:3px solid rgba(13,148,136,.35);outline-offset:2px}
 
-  /* Formularios */
-  .field{margin-bottom:14px}
-  label{display:block;font-size:13px;font-weight:600;margin-bottom:5px;color:#33423c}
-  input,select{width:100%;padding:10px 12px;border:1px solid #c5d0cb;border-radius:8px;font:inherit;background:#fff;color:var(--texto)}
-  input:focus,select:focus{outline:none;border-color:var(--verde);box-shadow:0 0 0 3px rgba(31,122,92,.18)}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media(max-width:600px){.row{grid-template-columns:1fr}}
-  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid transparent;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;background:var(--verde);color:#fff}
-  .btn:hover{background:var(--verde2)}
+  /* ---------- Marca ---------- */
+  .brand{display:flex;align-items:center;gap:11px}
+  .brand-mark{width:38px;height:38px;flex:none;border-radius:11px;display:grid;place-items:center;background:linear-gradient(145deg,var(--brand-2),var(--brand));color:#fff;box-shadow:0 6px 16px rgba(13,148,136,.25)}
+  .brand-mark svg{width:20px;height:20px}
+  .brand-text{display:flex;flex-direction:column;line-height:1.2}
+  .brand-text strong{font-size:15.5px;letter-spacing:-.01em}
+  .brand-text small{font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.65}
+  .brand-light{color:#fff}
+  .brand-light small{color:#94a3b8;opacity:1}
+  .brand-dark{color:var(--ink)}
+  .brand-dark small{color:var(--muted);opacity:1}
+
+  /* ---------- Formularios ---------- */
+  .field{margin-bottom:15px}
+  label{display:block;font-size:12.5px;font-weight:600;margin-bottom:6px;color:var(--ink-2)}
+  input,select{width:100%;padding:10px 12px;border:1px solid var(--line-strong);border-radius:9px;font:inherit;font-size:14px;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
+  input::placeholder{color:#94a3b8}
+  input:focus,select:focus{outline:none;border-color:var(--brand-2);box-shadow:0 0 0 3px rgba(13,148,136,.14)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.row{grid-template-columns:1fr}}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid transparent;border-radius:9px;padding:10px 17px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(15,118,110,.2);transition:background .15s,transform .15s,box-shadow .15s;white-space:nowrap}
+  .btn:hover{background:var(--brand-ink);box-shadow:0 4px 12px rgba(15,118,110,.22)}
+  .btn:active{transform:translateY(1px)}
+  .btn svg{width:16px;height:16px}
   .btn.block{width:100%}
-  .btn.ghost{background:#fff;color:var(--pizarra);border-color:#c5d0cb}
-  .btn.ghost:hover{background:var(--fondo)}
-  .btn.light{background:rgba(255,255,255,.12);color:#fff;padding:7px 14px;font-size:13px}
-  .btn.light:hover{background:rgba(255,255,255,.22)}
-  .btn.sm{padding:6px 10px;font-size:12.5px}
-  .btn.danger{background:#fff;color:var(--bad);border-color:#efb5af}
-  .btn.danger:hover{background:var(--badbg)}
-  .msg{font-size:13.5px;margin-top:12px;min-height:18px}
+  .btn.ghost{background:#fff;color:var(--ink-2);border-color:var(--line-strong);box-shadow:none}
+  .btn.ghost:hover{background:var(--surface-soft);color:var(--ink);box-shadow:none}
+  .btn.light{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.18);box-shadow:none}
+  .btn.light:hover{background:rgba(255,255,255,.18)}
+  .btn.sm{padding:7px 11px;font-size:12.5px;border-radius:8px}
+  .btn.danger{background:#fff;color:var(--bad);border-color:#fecaca;box-shadow:none}
+  .btn.danger:hover{background:var(--bad-bg)}
+  .msg{font-size:13px;margin-top:12px;min-height:18px}
   .msg.ok{color:var(--ok)} .msg.bad{color:var(--bad)}
-  .banner{background:var(--infobg);color:#1d3f7a;border-radius:8px;padding:10px 12px;font-size:14px;margin:16px 0 0}
-  .banner.warn{background:var(--warnbg);color:var(--warn)}
-  .flash{border-radius:10px;padding:14px 16px;margin-bottom:18px;font-weight:600}
-  .flash.ok{background:var(--okbg);color:var(--ok)}
-  .flash.bad{background:var(--badbg);color:var(--bad)}
+  .banner{background:var(--info-bg);color:#1e3a8a;border:1px solid #c7d2fe;border-radius:10px;padding:11px 13px;font-size:13.5px;margin-bottom:18px;line-height:1.5}
+  .banner.warn{background:var(--warn-bg);color:#92400e;border-color:#fde68a}
+  .flash{border:1px solid transparent;border-radius:12px;padding:13px 15px;margin-bottom:18px;font-weight:600;font-size:14px}
+  .flash.ok{background:var(--ok-bg);color:var(--ok);border-color:#bbf7d0}
+  .flash.bad{background:var(--bad-bg);color:var(--bad);border-color:#fecaca}
 
-  /* Pantalla de acceso */
+  /* ---------- Acceso ---------- */
   .auth{min-height:100vh;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr)}
-  .auth-brand{background:var(--pizarra);color:#c9d9d2;padding:56px;display:flex;flex-direction:column;justify-content:space-between;gap:40px}
-  .wordmark{font-family:Georgia,serif;font-size:22px;color:#fff;font-weight:700}
-  .chalk{width:52px;height:4px;background:var(--tiza);border-radius:2px;margin-bottom:22px}
-  .auth-brand h1{font-size:44px;line-height:1.1;color:#fff;max-width:11em}
-  .auth-brand p{font-size:16px;max-width:30em;margin:18px 0 0}
-  .pasos{list-style:none;padding:0;margin:0;display:grid;gap:14px}
-  .pasos li{display:flex;gap:14px;align-items:flex-start}
-  .pasos b{flex:none;width:28px;height:28px;border-radius:50%;border:1.5px solid var(--tiza);color:var(--tiza);display:grid;place-items:center;font-size:13px}
-  .auth-main{background:#fff;display:grid;place-items:center;padding:32px 20px}
-  .auth-card{width:100%;max-width:400px}
-  .auth-card h2{font-size:26px;margin-bottom:4px}
-  .seg{display:grid;grid-template-columns:1fr 1fr;background:var(--fondo);padding:4px;border-radius:10px;margin:22px 0 20px}
-  .seg button{border:0;background:none;padding:9px;border-radius:8px;font:inherit;font-weight:600;color:var(--muted);cursor:pointer}
-  .seg button.on{background:#fff;color:var(--pizarra);box-shadow:0 1px 3px rgba(0,0,0,.15)}
-  .switch{margin-top:16px;font-size:14px;color:var(--muted)}
-  .admin-link{margin-top:36px;padding-top:16px;border-top:1px solid var(--borde);font-size:13px;color:var(--muted);text-align:center}
-  @media(max-width:860px){
+  .auth-brand{position:relative;overflow:hidden;background:radial-gradient(1000px 500px at 10% 0%,rgba(13,148,136,.32),transparent 60%),linear-gradient(160deg,#0b1220 0%,#0c1b25 55%,#0f3a38 100%);color:#cbd5e1;padding:46px 54px;display:flex;flex-direction:column;justify-content:space-between;gap:36px}
+  .auth-brand::after{content:"";position:absolute;width:420px;height:420px;right:-160px;bottom:-200px;border-radius:50%;border:1px solid rgba(45,212,191,.22);box-shadow:0 0 0 70px rgba(45,212,191,.05),0 0 0 140px rgba(45,212,191,.03)}
+  .auth-copy{position:relative;z-index:1;max-width:480px}
+  .eyebrow{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .eyebrow-light{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#5eead4;margin-bottom:18px}
+  .auth-copy h1{font-size:clamp(32px,3.4vw,46px);color:#fff;line-height:1.08;margin-bottom:20px}
+  .auth-copy > p{font-size:16px;color:#a8b8c4;max-width:34em;margin-bottom:30px}
+  .feature-list{list-style:none;padding:0;margin:0;display:grid;gap:15px}
+  .feature-list li{display:flex;gap:13px;align-items:flex-start}
+  .feature-list .check{width:24px;height:24px;flex:none;border-radius:50%;background:rgba(45,212,191,.14);color:#5eead4;display:grid;place-items:center}
+  .feature-list .check svg{width:13px;height:13px}
+  .feature-list b{display:block;color:#e2e8f0;font-size:14px;font-weight:600}
+  .feature-list small{display:block;color:#8798a8;font-size:12.5px;margin-top:2px}
+  .auth-foot{position:relative;z-index:1;display:flex;align-items:center;gap:9px;font-size:12.5px;color:#8798a8}
+  .auth-foot .dot{width:7px;height:7px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 4px rgba(45,212,191,.12)}
+  .auth-main{background:var(--surface);display:grid;place-items:center;padding:40px 22px}
+  .auth-card{width:100%;max-width:420px}
+  .auth-head{margin-bottom:22px}
+  .auth-icon{width:44px;height:44px;border-radius:12px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:16px}
+  .auth-icon svg{width:22px;height:22px}
+  .auth-head h2{font-size:24px;margin-bottom:5px}
+  .seg{display:grid;grid-template-columns:1fr 1fr;background:var(--surface-soft);border:1px solid var(--line);padding:4px;border-radius:11px;margin:0 0 22px}
+  .seg button{border:0;background:none;padding:9px;border-radius:8px;font:inherit;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s}
+  .seg button.on{background:#fff;color:var(--brand-ink);box-shadow:var(--shadow-sm)}
+  .switch{margin-top:17px;font-size:13px;color:var(--muted);line-height:1.7}
+  .admin-link{margin-top:32px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);text-align:center}
+  @media(max-width:900px){
     .auth{grid-template-columns:1fr}
-    .auth-brand{padding:24px;gap:16px}
-    .auth-brand h1{font-size:28px}
-    .auth-brand p,.pasos{display:none}
-    .chalk{margin-bottom:12px}
+    .auth-brand{padding:24px 22px;gap:20px}
+    .auth-copy h1{font-size:27px;margin-bottom:10px}
+    .auth-copy > p,.feature-list{display:none}
+    .eyebrow-light{margin-bottom:10px}
+    .auth-brand::after{display:none}
+    .auth-foot{display:none}
+    .auth-main{padding:30px 20px 46px}
   }
 
-  /* App */
-  .top{background:var(--pizarra);color:#fff;display:flex;justify-content:space-between;align-items:center;padding:14px 24px;gap:12px}
-  .top .quien{font-size:13px;color:#bcd0c8;margin-right:10px}
-  .tabs{background:var(--pizarra2);display:flex;gap:2px;padding:0 20px;overflow-x:auto}
-  .tabs button{background:none;border:0;color:#bcd0c8;padding:12px 16px;font:inherit;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap}
-  .tabs button:hover{color:#fff}
-  .tabs button.on{color:#fff;border-bottom-color:var(--tiza)}
-  .wrap{max-width:980px;margin:0 auto;padding:24px 20px}
-  .wrap.narrow{max-width:640px}
-  .card{background:var(--card);border:1px solid var(--borde);border-radius:10px;padding:22px;margin-bottom:18px}
+  /* ---------- Estructura del panel ---------- */
+  .app-shell{display:flex;min-height:100vh}
+  .sidebar{width:264px;flex:none;background:linear-gradient(180deg,var(--sidebar) 0%,var(--sidebar-2) 100%);color:#94a3b8;display:flex;flex-direction:column;padding:22px 16px;position:sticky;top:0;height:100vh;z-index:40}
+  .sidebar-brand{padding:2px 6px 22px}
+  .side-nav{display:flex;flex-direction:column;gap:3px;overflow-y:auto}
+  .nav-label{font-size:10.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#5b6b7f;padding:14px 10px 7px}
+  .nav-btn{display:flex;align-items:center;gap:11px;width:100%;padding:10px 12px;border:0;border-radius:9px;background:transparent;color:#94a3b8;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;text-align:left;transition:background .15s,color .15s}
+  .nav-btn:hover{background:rgba(255,255,255,.06);color:#fff}
+  .nav-btn.on{background:rgba(13,148,136,.18);color:#5eead4;box-shadow:inset 3px 0 0 #2dd4bf}
+  .nav-btn svg{width:18px;height:18px;flex:none;opacity:.9}
+  .sidebar-foot{margin-top:auto;padding:16px 6px 0;border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+  .foot-card{display:flex;flex-direction:column;gap:2px}
+  .foot-card span{font-size:11.5px;font-weight:600;color:#cbd5e1}
+  .foot-card small{font-size:10.5px;color:#5b6b7f}
+  .version{font-size:10.5px;color:#5b6b7f;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:18px;padding:16px 30px;background:rgba(255,255,255,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:25}
+  .page-head{min-width:0;flex:1}
+  .page-head h1{font-size:19px;margin-top:2px}
+  .page-head .muted{margin-top:2px;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .topbar-right{display:flex;align-items:center;gap:14px;flex:none}
+  .date-pill{font-size:12.5px;color:var(--muted);background:var(--surface-soft);border:1px solid var(--line);border-radius:99px;padding:6px 12px;white-space:nowrap}
+  .user{display:flex;align-items:center;gap:9px;min-width:0}
+  .avatar{width:36px;height:36px;flex:none;border-radius:50%;background:linear-gradient(145deg,var(--brand-2),var(--brand));color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700;letter-spacing:.02em}
+  .user-meta{display:flex;flex-direction:column;line-height:1.25;min-width:0}
+  .user-meta b{font-size:12.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+  .user-meta small{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .icon-btn{display:none;border:1px solid var(--line-strong);background:#fff;color:var(--ink-2);border-radius:9px;width:38px;height:38px;cursor:pointer;place-items:center}
+  .icon-btn svg{width:18px;height:18px}
+  .sidebar-scrim{display:none}
+  .content{width:100%;max-width:1180px;margin:0 auto;padding:28px 30px 60px}
+  .content.narrow{max-width:800px}
+
+  /* ---------- Tarjetas y tablas ---------- */
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin-bottom:18px;box-shadow:var(--shadow-sm)}
+  .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+  .card-head h2{margin-bottom:3px}
+  .card-head .muted{max-width:70ch}
+  .card > h2{margin-bottom:5px}
+  .card > h2 + .muted{margin-bottom:16px}
   .card p.muted{margin:0 0 14px}
-  .tw{overflow-x:auto}
+  .tw{overflow-x:auto;margin:0 -4px;padding:0 4px}
   table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--borde);font-size:14px;vertical-align:middle}
-  th{color:var(--muted);font-size:13px;font-weight:600}
+  th,td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:middle}
+  th{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:var(--surface-soft)}
+  th:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
+  th:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
   tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#fbfcfe}
   td.acc{text-align:right;white-space:nowrap}
   td.acc .btn{margin-left:6px}
-  .badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
-  .b-presente,.b-si{background:var(--okbg);color:var(--ok)}
-  .b-ausente{background:var(--badbg);color:var(--bad)}
-  .b-tarde{background:var(--warnbg);color:var(--warn)}
-  .b-justificado{background:var(--infobg);color:var(--info)}
-  .b-no{background:var(--fondo);color:var(--muted)}
-  .estado-btns{display:flex;gap:4px}
-  .estado-btns button{flex:1;padding:7px 4px;font-size:12.5px;border-radius:6px;border:1px solid #c5d0cb;background:#fff;cursor:pointer;font:inherit;font-size:12.5px}
-  .estado-btns button.sel-presente{background:var(--okbg);border-color:var(--ok);color:var(--ok);font-weight:600}
-  .estado-btns button.sel-ausente{background:var(--badbg);border-color:var(--bad);color:var(--bad);font-weight:600}
-  .estado-btns button.sel-tarde{background:var(--warnbg);border-color:var(--warn);color:var(--warn);font-weight:600}
-  .estado-btns button.sel-justificado{background:var(--infobg);border-color:var(--info);color:var(--info);font-weight:600}
-  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
-  .qrbox{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;margin-top:16px}
-  .qrbox img{border:1px solid var(--borde);border-radius:8px;padding:8px;background:#fff}
+  .badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:99px;font-size:11.5px;font-weight:600;line-height:1.4;white-space:nowrap}
+  .b-presente,.b-si{background:var(--ok-bg);color:var(--ok)}
+  .b-ausente{background:var(--bad-bg);color:var(--bad)}
+  .b-tarde{background:var(--warn-bg);color:var(--warn)}
+  .b-justificado{background:var(--info-bg);color:var(--info)}
+  .b-no{background:var(--surface-soft);color:var(--muted);border:1px solid var(--line)}
+  .estado-btns{display:flex;gap:5px;flex-wrap:wrap}
+  .estado-btns button{flex:1;min-width:76px;padding:7px 6px;font-size:12px;border-radius:7px;border:1px solid var(--line-strong);background:#fff;color:var(--ink-2);cursor:pointer;font-family:inherit;font-weight:500;text-transform:capitalize;transition:background .12s,border-color .12s,color .12s}
+  .estado-btns button:hover{border-color:var(--brand-2);color:var(--brand)}
+  .estado-btns button.sel-presente{background:var(--ok-bg);border-color:var(--ok);color:var(--ok);font-weight:700}
+  .estado-btns button.sel-ausente{background:var(--bad-bg);border-color:var(--bad);color:var(--bad);font-weight:700}
+  .estado-btns button.sel-tarde{background:var(--warn-bg);border-color:var(--warn);color:var(--warn);font-weight:700}
+  .estado-btns button.sel-justificado{background:var(--info-bg);border-color:var(--info);color:var(--info);font-weight:700}
+  .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:18px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow-sm)}
+  .stat-icon{width:42px;height:42px;flex:none;border-radius:11px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand)}
+  .stat-icon svg{width:20px;height:20px}
+  .stat-label{display:block;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .stat-value{font-size:25px;font-weight:700;letter-spacing:-.03em;color:var(--ink)}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+  .split .card{margin-bottom:0}
+  @media(max-width:980px){.split{grid-template-columns:1fr}}
+  .qrbox{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;margin-top:16px;padding:16px;background:var(--surface-soft);border:1px solid var(--line);border-radius:12px}
+  .qrbox img{border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff;width:200px;height:200px}
   .qrbox .side{flex:1;min-width:220px}
-  .curso-est{padding:14px 0;border-bottom:1px solid var(--borde)}
-  .curso-est:last-child{border-bottom:0}
-  .curso-est .head{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;font-weight:600}
-  .bar{height:8px;background:var(--fondo);border-radius:4px;overflow:hidden;margin-bottom:8px}
-  .bar i{display:block;height:100%;background:var(--verde)}
+  .qrbox .side p{margin-bottom:10px}
+  .qrbox input{font-size:12px;color:var(--muted);background:#fff}
+  .curso-est{padding:15px 0;border-bottom:1px solid var(--line)}
+  .curso-est:last-child{border-bottom:0;padding-bottom:0}
+  .curso-est .head{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px;font-weight:600;font-size:14px}
+  .bar{height:8px;background:#eef2f7;border-radius:99px;overflow:hidden;margin-bottom:10px}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand-2),var(--brand));border-radius:99px}
   .chips{display:flex;gap:6px;flex-wrap:wrap}
-  dialog{border:0;border-radius:12px;padding:26px;max-width:380px;width:calc(100% - 32px)}
-  dialog::backdrop{background:rgba(10,25,20,.55)}
-  .clave{font:700 26px/1 ui-monospace,Menlo,Consolas,monospace;background:var(--fondo);padding:14px;border-radius:8px;text-align:center;margin:14px 0;letter-spacing:2px;user-select:all}
+  dialog{border:0;border-radius:16px;padding:26px;max-width:390px;width:calc(100% - 32px);box-shadow:var(--shadow)}
+  dialog::backdrop{background:rgba(8,17,28,.58);backdrop-filter:blur(2px)}
+  .clave{font:700 25px/1 ui-monospace,Menlo,Consolas,monospace;background:var(--surface-soft);border:1px dashed var(--line-strong);padding:15px;border-radius:10px;text-align:center;margin:15px 0;letter-spacing:3px;user-select:all;color:var(--brand-ink)}
+  #studentScreen .topbar{justify-content:space-between}
+  .student-hero{background:radial-gradient(700px 240px at 90% 0%,rgba(13,148,136,.16),transparent 65%),linear-gradient(140deg,#0b1220,#0e2b2b);border-radius:var(--radius);padding:26px 28px;color:#fff;display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:18px;flex-wrap:wrap;border:1px solid #1e3a3a}
+  .student-hero h1{font-size:25px;margin:5px 0 6px;color:#fff}
+  .student-hero p{color:#a8b8c4;font-size:13.5px;max-width:46ch}
+  .student-hero .eyebrow{color:#5eead4}
+  .hero-chip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:9px 14px;font-size:12.5px;color:#dbe7e4;white-space:nowrap}
+  .hero-chip svg{width:15px;height:15px;color:#5eead4}
+  @media(max-width:1024px){
+    .sidebar{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .2s ease}
+    .sidebar.open{transform:translateX(0)}
+    .sidebar-scrim{display:block;position:fixed;inset:0;background:rgba(8,17,28,.5);z-index:35;opacity:0;pointer-events:none;transition:opacity .2s}
+    .sidebar-scrim.open{opacity:1;pointer-events:auto}
+    .icon-btn{display:grid}
+    .topbar{padding:13px 18px}
+    .date-pill{display:none}
+    .content{padding:20px 18px 50px}
+  }
+  @media(max-width:640px){
+    .user-meta{display:none}
+    .btn.hide-sm{display:none}
+    .page-head .muted{display:none}
+    .card{padding:18px}
+    .auth-head h2{font-size:22px}
+  }
   @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -609,23 +716,41 @@ const HTML_PAGE = `<!DOCTYPE html>
 <!-- ============ ACCESO ============ -->
 <div id="authScreen" class="auth hidden">
   <aside class="auth-brand">
-    <div class="wordmark">Asistencia</div>
-    <div>
-      <div class="chalk"></div>
-      <h1>Pasar lista toma segundos.</h1>
-      <p>Tu docente muestra un código QR en clase. Lo escaneas con tu celular y tu asistencia queda guardada.</p>
+    <div class="brand brand-light">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="brand-text"><strong>Asistencia</strong><small>Panel académico</small></span>
     </div>
-    <ol class="pasos">
-      <li><b>1</b><span>Escanea el QR que muestra tu docente.</span></li>
-      <li><b>2</b><span>Crea tu cuenta la primera vez, o inicia sesión.</span></li>
-      <li><b>3</b><span>Listo: quedas marcado como presente.</span></li>
-    </ol>
+
+    <div class="auth-copy">
+      <span class="eyebrow-light">Control de asistencia</span>
+      <h1>Asistencia clara,<br>en segundos.</h1>
+      <p>Un sistema simple para registrar cursos, estudiantes y asistencia con códigos QR. Sin planillas, sin fricción y con el historial siempre a mano.</p>
+      <ul class="feature-list">
+        <li>
+          <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <div><b>Escaneo con QR</b><small>Los estudiantes marcan su asistencia desde su celular.</small></div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <div><b>Control por curso</b><small>Cursos, inscripciones e historial en un mismo lugar.</small></div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <div><b>Acceso por rol</b><small>Administrador, docentes y estudiantes con permisos claros.</small></div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="auth-foot"><span class="dot"></span> Cloudflare Workers + D1 · Conexión segura</div>
   </aside>
 
   <main class="auth-main">
     <div class="auth-card">
-      <h2 id="authTitle">Bienvenido</h2>
-      <div class="muted" id="authSub">Ingresa para continuar.</div>
+      <div class="auth-head">
+        <div class="auth-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path d="m9 12 2 2 4-4"/></svg></div>
+        <h2 id="authTitle">Bienvenido</h2>
+        <p class="muted" id="authSub">Ingresa para continuar.</p>
+      </div>
       <div id="authBanner" class="banner hidden"></div>
 
       <div class="seg" id="segWrap">
@@ -637,15 +762,15 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div id="paneEstudiante">
         <form id="estLogin" onsubmit="loginEstudiante();return false">
           <div class="field"><label for="estLoginDoc">Documento</label><input id="estLoginDoc" autocomplete="username" inputmode="numeric" placeholder="Tu número de documento"></div>
-          <div class="field"><label for="estLoginPass">Contraseña</label><input id="estLoginPass" type="password" autocomplete="current-password"></div>
+          <div class="field"><label for="estLoginPass">Contraseña</label><input id="estLoginPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
           <button class="btn block" type="submit">Entrar</button>
           <p class="switch">¿Primera vez? <a href="#" onclick="estForm('registro');return false">Crea tu cuenta</a><br>
           ¿Olvidaste tu contraseña? <a href="#" onclick="olvide();return false">Qué hacer</a></p>
         </form>
         <form id="estRegistro" class="hidden" onsubmit="registrarEstudiante();return false">
-          <div class="field"><label for="estRegNombre">Nombre completo</label><input id="estRegNombre" autocomplete="name"></div>
+          <div class="field"><label for="estRegNombre">Nombre completo</label><input id="estRegNombre" autocomplete="name" placeholder="Nombre y apellidos"></div>
           <div class="field"><label for="estRegDoc">Documento</label><input id="estRegDoc" inputmode="numeric" placeholder="Sin puntos ni espacios"></div>
-          <div class="field"><label for="estRegEmail">Email (opcional)</label><input id="estRegEmail" type="email" autocomplete="email"></div>
+          <div class="field"><label for="estRegEmail">Email (opcional)</label><input id="estRegEmail" type="email" autocomplete="email" placeholder="tu@correo.com"></div>
           <div class="field"><label for="estRegPass">Contraseña (mínimo 6 caracteres)</label><input id="estRegPass" type="password" autocomplete="new-password"></div>
           <div class="field"><label for="estRegPass2">Repite la contraseña</label><input id="estRegPass2" type="password" autocomplete="new-password"></div>
           <button class="btn block" type="submit">Crear cuenta</button>
@@ -657,14 +782,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div id="paneDocente" class="hidden">
         <form id="docLogin" onsubmit="loginDocente();return false">
           <div class="field"><label for="docenteEmail">Email</label><input id="docenteEmail" type="email" autocomplete="username" placeholder="tu@correo.com"></div>
-          <div class="field"><label for="docentePass">Contraseña</label><input id="docentePass" type="password" autocomplete="current-password"></div>
+          <div class="field"><label for="docentePass">Contraseña</label><input id="docentePass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
           <button class="btn block" type="submit">Entrar</button>
           <p class="switch">¿No tienes cuenta? <a href="#" onclick="docForm('registro');return false">Regístrate</a><br>
           ¿Olvidaste tu contraseña? Pídele al administrador que la restablezca.</p>
         </form>
         <form id="docRegistro" class="hidden" onsubmit="registrarDocente();return false">
           <div class="field"><label for="docRegNombre">Nombre completo</label><input id="docRegNombre" autocomplete="name"></div>
-          <div class="field"><label for="docRegEmail">Email</label><input id="docRegEmail" type="email" autocomplete="email"></div>
+          <div class="field"><label for="docRegEmail">Email</label><input id="docRegEmail" type="email" autocomplete="email" placeholder="tu@correo.com"></div>
           <div class="field"><label for="docRegPass">Contraseña (mínimo 6 caracteres)</label><input id="docRegPass" type="password" autocomplete="new-password"></div>
           <div class="field"><label for="docRegCodigo">Código de invitación (si tu institución lo entregó)</label><input id="docRegCodigo"></div>
           <button class="btn block" type="submit">Crear cuenta</button>
@@ -675,9 +800,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       <!-- ADMIN (separado) -->
       <div id="paneAdmin" class="hidden">
         <form onsubmit="login();return false">
-          <div class="field"><label for="apiKeyInput">Clave de administrador</label><input id="apiKeyInput" type="password" autocomplete="current-password"></div>
+          <div class="field"><label for="apiKeyInput">Clave de administrador</label><input id="apiKeyInput" type="password" autocomplete="current-password" placeholder="Tu clave de acceso"></div>
           <button class="btn block" type="submit">Entrar como administrador</button>
-          <p class="switch"><a href="#" onclick="setTab('estudiante');return false">Volver</a></p>
+          <p class="switch"><a href="#" onclick="setTab('estudiante');return false">Volver al acceso</a></p>
         </form>
       </div>
 
@@ -689,19 +814,38 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 <!-- ============ ESTUDIANTE ============ -->
 <div id="studentScreen" class="hidden">
-  <header class="top">
-    <div class="wordmark">Asistencia</div>
-    <div><span class="quien" id="stNombre"></span><button class="btn light" onclick="cerrarSesion()">Salir</button></div>
+  <header class="topbar">
+    <div class="brand brand-dark">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="brand-text"><strong>Asistencia</strong><small>Portal del estudiante</small></span>
+    </div>
+    <div class="topbar-right">
+      <div class="user">
+        <span class="avatar" id="stAvatar">E</span>
+        <span class="user-meta"><b id="stNombre"></b><small>Estudiante</small></span>
+      </div>
+      <button class="btn ghost sm" onclick="cerrarSesion()">Salir</button>
+    </div>
   </header>
-  <div class="wrap narrow">
+  <main class="content narrow">
     <div id="stFlash" class="flash hidden" role="status"></div>
-    <section class="card">
-      <h2>Mis cursos</h2>
-      <div id="stCursos" class="muted">Cargando...</div>
-      <p class="muted" style="margin:14px 0 0">Para marcar tu asistencia, escanea el QR que muestre tu docente en clase.</p>
+    <section class="student-hero">
+      <div>
+        <span class="eyebrow">Mi panel</span>
+        <h1>Hola, <span id="stNombreHero">estudiante</span></h1>
+        <p>Consulta tus cursos y tu porcentaje de asistencia. Para marcar tu presencia en clase, escanea el código QR que muestre tu docente.</p>
+      </div>
+      <div class="hero-chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20v.01M20 20v.01"/></svg>
+        Escanea el QR de tu docente
+      </div>
     </section>
     <section class="card">
-      <h2>Cambiar contraseña</h2>
+      <div class="card-head"><div><h2>Mis cursos</h2><p class="muted">Resumen de asistencia por curso en el que estás inscrito.</p></div></div>
+      <div id="stCursos" class="muted">Cargando...</div>
+    </section>
+    <section class="card">
+      <div class="card-head"><div><h2>Cambiar contraseña</h2><p class="muted">Actualiza la clave con la que ingresas a tu cuenta.</p></div></div>
       <form onsubmit="cambiarClave();return false">
         <div class="field"><label for="pwActual">Contraseña actual</label><input id="pwActual" type="password" autocomplete="current-password"></div>
         <div class="row">
@@ -712,134 +856,203 @@ const HTML_PAGE = `<!DOCTYPE html>
         <div id="pwMsg" class="msg"></div>
       </form>
     </section>
-  </div>
+  </main>
 </div>
 
 <!-- ============ ADMIN / DOCENTE ============ -->
 <div id="app" class="hidden">
-  <header class="top">
-    <div class="wordmark">Asistencia</div>
-    <div><span class="quien" id="quien"></span><button class="btn light" onclick="cerrarSesion()">Cerrar sesión</button></div>
-  </header>
-  <nav class="tabs" id="tabsNav">
-    <button data-tab="cursos" class="on">Cursos</button>
-    <button data-tab="estudiantes">Estudiantes</button>
-    <button data-tab="inscripciones">Inscripciones</button>
-    <button data-tab="asistencia">Tomar asistencia</button>
-    <button data-tab="historial">Historial</button>
-    <button data-tab="docentes" id="tabBtnDocentes" class="hidden">Docentes</button>
-  </nav>
-  <div class="wrap">
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand brand-light">
+          <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="brand-text"><strong>Asistencia</strong><small>Panel académico</small></span>
+        </div>
+      </div>
 
-    <section id="tab-cursos">
-      <div class="card">
-        <h2>Nuevo curso</h2>
-        <div class="row">
-          <div class="field"><label for="cursoNombre">Nombre</label><input id="cursoNombre" placeholder="Ej. Matemáticas 10A"></div>
-          <div class="field"><label for="cursoDesc">Descripción (opcional)</label><input id="cursoDesc"></div>
-        </div>
-        <button class="btn" onclick="crearCurso()">Agregar curso</button>
-      </div>
-      <div class="card">
-        <h2>Cursos registrados</h2>
-        <div class="tw"><table><thead><tr><th>Nombre</th><th>Descripción</th><th></th></tr></thead><tbody id="listaCursos"></tbody></table></div>
-      </div>
-    </section>
+      <nav class="side-nav" id="tabsNav">
+        <span class="nav-label">Gestión</span>
+        <button type="button" data-tab="cursos" class="nav-btn on">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Cursos
+        </button>
+        <button type="button" data-tab="estudiantes" class="nav-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13A4 4 0 0 1 16 11"/></svg>
+          Estudiantes
+        </button>
+        <button type="button" data-tab="inscripciones" class="nav-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Inscripciones
+        </button>
+        <button type="button" data-tab="asistencia" class="nav-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8 12 3 3 5-6"/></svg>
+          Tomar asistencia
+        </button>
+        <button type="button" data-tab="historial" class="nav-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          Historial
+        </button>
+        <button type="button" data-tab="docentes" id="tabBtnDocentes" class="nav-btn hidden">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><circle cx="12" cy="10" r="2.2"/><path d="M8.8 16a3.4 3.4 0 0 1 6.4 0"/></svg>
+          Docentes
+        </button>
+      </nav>
 
-    <section id="tab-estudiantes" class="hidden">
-      <div class="card">
-        <h2>Nuevo estudiante</h2>
-        <div class="row">
-          <div class="field"><label for="estNombre">Nombre completo</label><input id="estNombre"></div>
-          <div class="field"><label for="estDoc">Documento</label><input id="estDoc"></div>
-        </div>
-        <div class="row">
-          <div class="field"><label for="estEmail">Email (opcional)</label><input id="estEmail"></div>
-          <div class="field"><label for="estTel">Teléfono (opcional)</label><input id="estTel"></div>
-        </div>
-        <button class="btn" onclick="crearEstudiante()">Agregar estudiante</button>
+      <div class="sidebar-foot">
+        <div class="foot-card"><span>Plan gratuito</span><small>Cloudflare Workers · D1</small></div>
+        <span class="version">v3.0</span>
       </div>
-      <div class="card">
-        <h2>Estudiantes registrados</h2>
-        <p class="muted">Si un estudiante olvidó su contraseña, usa "Restablecer clave": se genera una clave temporal que debes entregarle, y luego él la cambia desde su perfil.</p>
-        <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th>Cuenta</th><th></th></tr></thead><tbody id="listaEstudiantes"></tbody></table></div>
-      </div>
-    </section>
+    </aside>
+    <div class="sidebar-scrim" id="sidebarScrim" onclick="closeMenu()"></div>
 
-    <section id="tab-inscripciones" class="hidden">
-      <div class="card">
-        <h2>Inscribir estudiante a un curso</h2>
-        <div class="row">
-          <div class="field"><label for="inscCurso">Curso</label><select id="inscCurso"></select></div>
-          <div class="field"><label for="inscEstudiante">Estudiante</label><select id="inscEstudiante"></select></div>
+    <main class="main">
+      <header class="topbar">
+        <button type="button" class="icon-btn" onclick="toggleMenu()" aria-label="Abrir menú">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="page-head">
+          <span class="eyebrow" id="pageEyebrow">Panel</span>
+          <h1 id="pageTitle">Cursos</h1>
+          <p class="muted" id="pageSub">Gestiona la oferta académica y su información general.</p>
         </div>
-        <button class="btn" onclick="inscribir()">Inscribir</button>
-        <div id="inscMsg" class="msg"></div>
-      </div>
-      <div class="card">
-        <h2>QR de registro para estudiantes</h2>
-        <p class="muted">El estudiante lo escanea, crea su cuenta y, si usas el QR del curso, queda inscrito automáticamente. El QR del curso vale 7 días.</p>
-        <div class="field"><label for="verCurso">Curso</label><select id="verCurso" onchange="cargarInscritos()"></select></div>
-        <div class="actions">
-          <button class="btn" onclick="generarQRRegistro(true)">QR de registro e inscripción al curso</button>
-          <button class="btn ghost" onclick="generarQRRegistro(false)">QR de registro general</button>
+        <div class="topbar-right">
+          <span class="date-pill" id="todayLabel"></span>
+          <div class="user">
+            <span class="avatar" id="avatar">A</span>
+            <span class="user-meta"><b id="quien">Administrador</b><small id="quienRol">Administrador</small></span>
+          </div>
+          <button type="button" class="btn ghost sm" onclick="cerrarSesion()">Salir</button>
         </div>
-        <div id="qrRegistro"></div>
-      </div>
-      <div class="card">
-        <h2>Estudiantes del curso</h2>
-        <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th></th></tr></thead><tbody id="listaInscritos"></tbody></table></div>
-      </div>
-    </section>
+      </header>
 
-    <section id="tab-asistencia" class="hidden">
-      <div class="card">
-        <h2>Tomar asistencia</h2>
-        <div class="row">
-          <div class="field"><label for="asisCurso">Curso</label><select id="asisCurso" onchange="cargarAsistencia()"></select></div>
-          <div class="field"><label for="asisFecha">Fecha</label><input type="date" id="asisFecha" onchange="cargarAsistencia()"></div>
-        </div>
-        <div class="tw"><table><thead><tr><th>Estudiante</th><th style="min-width:300px">Estado</th></tr></thead><tbody id="listaAsistencia"></tbody></table></div>
-        <div class="actions">
-          <button class="btn" onclick="guardarAsistencia()">Guardar asistencia</button>
-          <button class="btn ghost" onclick="todosPresentes()">Marcar todos presentes</button>
-          <button class="btn ghost" onclick="cargarAsistencia()">Actualizar lista</button>
-        </div>
-        <div id="asisMsg" class="msg"></div>
-      </div>
-      <div class="card">
-        <h2>QR para que los estudiantes marquen solos</h2>
-        <p class="muted">Se genera para el curso y la fecha elegidos arriba y vale 3 horas. Quien ya tenga cuenta e inscripción queda marcado como presente al escanearlo. Después pulsa "Actualizar lista" para verlo aquí.</p>
-        <button class="btn" onclick="generarQR()">Generar QR de asistencia</button>
-        <div id="qrResultado"></div>
-      </div>
-    </section>
+      <div class="content">
+        <section id="tab-cursos" class="tab-panel">
+          <div class="stats">
+            <article class="stat">
+              <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+              <div><span class="stat-label">Cursos activos</span><strong class="stat-value" id="statCursos">0</strong></div>
+            </article>
+            <article class="stat">
+              <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13A4 4 0 0 1 16 11"/></svg></span>
+              <div><span class="stat-label">Estudiantes</span><strong class="stat-value" id="statEstudiantes">0</strong></div>
+            </article>
+            <article class="stat hidden" id="statDocentesCard">
+              <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><circle cx="12" cy="10" r="2.2"/><path d="M8.8 16a3.4 3.4 0 0 1 6.4 0"/></svg></span>
+              <div><span class="stat-label">Docentes</span><strong class="stat-value" id="statDocentes">0</strong></div>
+            </article>
+          </div>
 
-    <section id="tab-historial" class="hidden">
-      <div class="card">
-        <h2>Historial de asistencia</h2>
-        <div class="field"><label for="histCurso">Curso</label><select id="histCurso" onchange="cargarHistorial()"></select></div>
-        <div class="tw"><table><thead><tr><th>Estudiante</th><th>Fecha</th><th>Estado</th></tr></thead><tbody id="listaHistorial"></tbody></table></div>
-      </div>
-    </section>
+          <section class="card">
+            <div class="card-head"><div><h2>Nuevo curso</h2><p class="muted">Crea un curso para empezar a inscribir estudiantes y tomar asistencia.</p></div></div>
+            <div class="row">
+              <div class="field"><label for="cursoNombre">Nombre</label><input id="cursoNombre" placeholder="Ej. Matemáticas 10A"></div>
+              <div class="field"><label for="cursoDesc">Descripción (opcional)</label><input id="cursoDesc" placeholder="Ej. Grupo de la mañana"></div>
+            </div>
+            <button type="button" class="btn" onclick="crearCurso()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Agregar curso</button>
+          </section>
 
-    <section id="tab-docentes" class="hidden">
-      <div class="card">
-        <h2>Registrar docente</h2>
-        <p class="muted">Los docentes entran con su email y contraseña, sin la clave maestra.</p>
-        <div class="row">
-          <div class="field"><label for="docNombre">Nombre</label><input id="docNombre"></div>
-          <div class="field"><label for="docEmail">Email</label><input id="docEmail" type="email"></div>
-        </div>
-        <div class="field"><label for="docPass">Contraseña (mínimo 6 caracteres)</label><input id="docPass" type="password"></div>
-        <button class="btn" onclick="crearDocente()">Registrar docente</button>
-        <div id="docMsg" class="msg"></div>
+          <section class="card">
+            <div class="card-head"><div><h2>Cursos registrados</h2><p class="muted">Listado de cursos disponibles en el sistema.</p></div></div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Descripción</th><th></th></tr></thead><tbody id="listaCursos"></tbody></table></div>
+          </section>
+        </section>
+
+        <section id="tab-estudiantes" class="tab-panel hidden">
+          <section class="card">
+            <div class="card-head"><div><h2>Nuevo estudiante</h2><p class="muted">Registra al estudiante. Luego podrás inscribirlo en uno o varios cursos.</p></div></div>
+            <div class="row">
+              <div class="field"><label for="estNombre">Nombre completo</label><input id="estNombre" placeholder="Nombre y apellidos"></div>
+              <div class="field"><label for="estDoc">Documento</label><input id="estDoc" placeholder="Número de documento"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label for="estEmail">Email (opcional)</label><input id="estEmail" type="email" placeholder="estudiante@correo.com"></div>
+              <div class="field"><label for="estTel">Teléfono (opcional)</label><input id="estTel" placeholder="Número de contacto"></div>
+            </div>
+            <button type="button" class="btn" onclick="crearEstudiante()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Agregar estudiante</button>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><div><h2>Estudiantes registrados</h2><p class="muted">Si un estudiante olvidó su contraseña, usa "Restablecer clave": se genera una clave temporal que debes entregarle y luego él la cambia desde su perfil.</p></div></div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th>Cuenta</th><th></th></tr></thead><tbody id="listaEstudiantes"></tbody></table></div>
+          </section>
+        </section>
+
+        <section id="tab-inscripciones" class="tab-panel hidden">
+          <div class="split">
+            <section class="card">
+              <div class="card-head"><div><h2>Inscribir estudiante</h2><p class="muted">Vincula un estudiante a un curso existente.</p></div></div>
+              <div class="field"><label for="inscCurso">Curso</label><select id="inscCurso"></select></div>
+              <div class="field"><label for="inscEstudiante">Estudiante</label><select id="inscEstudiante"></select></div>
+              <button type="button" class="btn" onclick="inscribir()">Inscribir</button>
+              <div id="inscMsg" class="msg"></div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><div><h2>QR de registro</h2><p class="muted">El estudiante lo escanea, crea su cuenta y queda inscrito automáticamente en el curso. Válido por 7 días.</p></div></div>
+              <div class="field"><label for="verCurso">Curso</label><select id="verCurso" onchange="cargarInscritos()"></select></div>
+              <div class="actions" style="margin-top:0">
+                <button type="button" class="btn" onclick="generarQRRegistro(true)">QR de registro e inscripción</button>
+                <button type="button" class="btn ghost" onclick="generarQRRegistro(false)">QR de registro general</button>
+              </div>
+              <div id="qrRegistro"></div>
+            </section>
+          </div>
+
+          <section class="card" style="margin-top:18px">
+            <div class="card-head"><div><h2>Estudiantes del curso</h2><p class="muted">Personas inscritas actualmente en el curso seleccionado.</p></div></div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th></th></tr></thead><tbody id="listaInscritos"></tbody></table></div>
+          </section>
+        </section>
+
+        <section id="tab-asistencia" class="tab-panel hidden">
+          <section class="card">
+            <div class="card-head"><div><h2>Tomar asistencia</h2><p class="muted">Elige el curso y la fecha, marca el estado de cada estudiante y guarda los cambios.</p></div></div>
+            <div class="row">
+              <div class="field"><label for="asisCurso">Curso</label><select id="asisCurso" onchange="cargarAsistencia()"></select></div>
+              <div class="field"><label for="asisFecha">Fecha</label><input type="date" id="asisFecha" onchange="cargarAsistencia()"></div>
+            </div>
+            <div class="tw"><table><thead><tr><th>Estudiante</th><th style="min-width:320px">Estado</th></tr></thead><tbody id="listaAsistencia"></tbody></table></div>
+            <div class="actions">
+              <button type="button" class="btn" onclick="guardarAsistencia()">Guardar asistencia</button>
+              <button type="button" class="btn ghost" onclick="todosPresentes()">Marcar todos presentes</button>
+              <button type="button" class="btn ghost" onclick="cargarAsistencia()">Actualizar lista</button>
+            </div>
+            <div id="asisMsg" class="msg"></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><div><h2>QR para marcar asistencia</h2><p class="muted">Se genera para el curso y la fecha elegidos arriba y vale 3 horas. Quien tenga cuenta e inscripción queda marcado como presente al escanearlo. Después pulsa "Actualizar lista" para verlo aquí.</p></div></div>
+            <button type="button" class="btn" onclick="generarQR()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20v.01M20 20v.01"/></svg>Generar QR de asistencia</button>
+            <div id="qrResultado"></div>
+          </section>
+        </section>
+
+        <section id="tab-historial" class="tab-panel hidden">
+          <section class="card">
+            <div class="card-head"><div><h2>Historial de asistencia</h2><p class="muted">Consulta los registros guardados por curso, ordenados por fecha.</p></div></div>
+            <div class="field"><label for="histCurso">Curso</label><select id="histCurso" onchange="cargarHistorial()"></select></div>
+            <div class="tw"><table><thead><tr><th>Estudiante</th><th>Fecha</th><th>Estado</th></tr></thead><tbody id="listaHistorial"></tbody></table></div>
+          </section>
+        </section>
+
+        <section id="tab-docentes" class="tab-panel hidden">
+          <section class="card">
+              <div class="card-head"><div><h2>Registrar docente</h2><p class="muted">Los docentes entran con su email y contraseña, sin la clave maestra.</p></div></div>
+              <div class="row">
+                <div class="field"><label for="docNombre">Nombre</label><input id="docNombre"></div>
+                <div class="field"><label for="docEmail">Email</label><input id="docEmail" type="email"></div>
+              </div>
+              <div class="field"><label for="docPass">Contraseña (mínimo 6 caracteres)</label><input id="docPass" type="password"></div>
+              <button type="button" class="btn" onclick="crearDocente()">Registrar docente</button>
+              <div id="docMsg" class="msg"></div>
+            </section>
+          <section class="card">
+            <div class="card-head"><div><h2>Docentes registrados</h2><p class="muted">Cuentas con acceso al panel de gestión.</p></div></div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Email</th><th></th></tr></thead><tbody id="listaDocentes"></tbody></table></div>
+          </section>
+        </section>
       </div>
-      <div class="card">
-        <h2>Docentes registrados</h2>
-        <div class="tw"><table><thead><tr><th>Nombre</th><th>Email</th><th></th></tr></thead><tbody id="listaDocentes"></tbody></table></div>
-      </div>
-    </section>
+    </main>
   </div>
 </div>
 
@@ -848,25 +1061,60 @@ const HTML_PAGE = `<!DOCTYPE html>
   <div id="dlgTexto" class="muted"></div>
   <div class="clave" id="dlgClave"></div>
   <p class="muted">Entrégasela a la persona. Esta clave no se vuelve a mostrar.</p>
-  <button class="btn block" onclick="document.getElementById('dlg').close()">Entendido</button>
+  <button type="button" class="btn block" onclick="document.getElementById('dlg').close()">Entendido</button>
 </dialog>
 
 <script>
 var ROLE = localStorage.getItem('asistencia_role') || '';
 var API_KEY = localStorage.getItem('asistencia_key') || '';
 var TOKEN = localStorage.getItem('asistencia_token') || '';
+var NOMBRE = localStorage.getItem('asistencia_nombre') || '';
 var courses = [], students = [];
 var estados = ['presente','ausente','tarde','justificado'];
 var P = new URLSearchParams(location.search);
 var CHECKIN = P.get('checkin');
 var REGISTRO = P.get('registro');
+var TAB_META = {
+  cursos: ['Cursos', 'Gestiona la oferta académica y su información general.'],
+  estudiantes: ['Estudiantes', 'Registra y administra las cuentas de tus estudiantes.'],
+  inscripciones: ['Inscripciones', 'Vincula estudiantes a cursos y comparte códigos QR.'],
+  asistencia: ['Tomar asistencia', 'Registra la asistencia por curso y fecha.'],
+  historial: ['Historial', 'Consulta los registros de asistencia por curso.'],
+  docentes: ['Docentes', 'Administra las cuentas con acceso al panel.']
+};
 
 function $(id){ return document.getElementById(id); }
 function esc(s){
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+function inicial(nombre){
+  var n = String(nombre || '').trim();
+  if (!n) return '?';
+  var partes = n.split(/\\s+/);
+  return (partes[0].charAt(0) + (partes[1] ? partes[1].charAt(0) : '')).toUpperCase();
+}
+function hoyLocal(){
+  var d = new Date();
+  var m = String(d.getMonth() + 1).padStart(2, '0');
+  var dia = String(d.getDate()).padStart(2, '0');
+  return d.getFullYear() + '-' + m + '-' + dia;
+}
+function fechaLarga(){
+  try {
+    var t = new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' });
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  } catch (e) { return ''; }
+}
 function ver(id){
   ['authScreen','studentScreen','app'].forEach(function(x){ $(x).classList.toggle('hidden', x !== id); });
+}
+function toggleMenu(){
+  $('sidebar').classList.toggle('open');
+  $('sidebarScrim').classList.toggle('open');
+}
+function closeMenu(){
+  $('sidebar').classList.remove('open');
+  $('sidebarScrim').classList.remove('open');
 }
 function authHeaders(){
   if (ROLE === 'admin') return { 'X-API-Key': API_KEY };
@@ -892,15 +1140,16 @@ async function post(path, body){
 
 // ---------- Sesión ----------
 function limpiarSesion(){
-  ['asistencia_role','asistencia_key','asistencia_token'].forEach(function(k){ localStorage.removeItem(k); });
-  ROLE = ''; API_KEY = ''; TOKEN = '';
+  ['asistencia_role','asistencia_key','asistencia_token','asistencia_nombre'].forEach(function(k){ localStorage.removeItem(k); });
+  ROLE = ''; API_KEY = ''; TOKEN = ''; NOMBRE = '';
 }
 function cerrarSesion(){ limpiarSesion(); location.href = location.pathname; }
-function guardarSesion(role, token, key){
-  ROLE = role; TOKEN = token || ''; API_KEY = key || '';
+function guardarSesion(role, token, key, nombre){
+  ROLE = role; TOKEN = token || ''; API_KEY = key || ''; NOMBRE = nombre || '';
   localStorage.setItem('asistencia_role', role);
   if (token) localStorage.setItem('asistencia_token', token); else localStorage.removeItem('asistencia_token');
   if (key) localStorage.setItem('asistencia_key', key); else localStorage.removeItem('asistencia_key');
+  if (nombre) localStorage.setItem('asistencia_nombre', nombre); else localStorage.removeItem('asistencia_nombre');
 }
 
 // ---------- Pantalla de acceso ----------
@@ -914,12 +1163,14 @@ function setTab(t){
   $('segWrap').classList.remove('hidden');
   $('adminLinkWrap').classList.remove('hidden');
   $('authTitle').textContent = 'Bienvenido';
+  $('authSub').textContent = 'Ingresa para continuar.';
   msg('');
 }
 function mostrarAdmin(){
   ['paneEstudiante','paneDocente','segWrap','adminLinkWrap'].forEach(function(x){ $(x).classList.add('hidden'); });
   $('paneAdmin').classList.remove('hidden');
   $('authTitle').textContent = 'Acceso administrativo';
+  $('authSub').textContent = 'Ingresa con la clave maestra del sistema.';
   msg('');
 }
 function estForm(c){ $('estLogin').classList.toggle('hidden', c !== 'login'); $('estRegistro').classList.toggle('hidden', c !== 'registro'); msg(''); }
@@ -958,19 +1209,23 @@ async function entrarComo(role){
   if (role === 'estudiante') return mostrarEstudiante();
   ver('app');
   $('tabBtnDocentes').classList.toggle('hidden', role !== 'admin');
-  $('quien').textContent = role === 'admin' ? 'Administrador' : 'Docente';
+  var display = role === 'admin' ? 'Administrador' : (NOMBRE || 'Docente');
+  $('quien').textContent = display;
+  $('quienRol').textContent = role === 'admin' ? 'Administrador' : 'Docente';
+  $('avatar').textContent = role === 'admin' ? 'A' : inicial(display);
+  $('todayLabel').textContent = fechaLarga();
   initApp();
 }
 
 async function login(){
   var key = $('apiKeyInput').value;
   var d = await post('/login', { apiKey: key });
-  if (d.ok) { guardarSesion('admin', '', key); entrarComo('admin'); }
+  if (d.ok) { guardarSesion('admin', '', key, 'Administrador'); entrarComo('admin'); }
   else msg('Clave incorrecta', 'bad');
 }
 async function loginDocente(){
   var d = await post('/login-docente', { email: $('docenteEmail').value, password: $('docentePass').value });
-  if (d.ok) { guardarSesion('docente', d.token); entrarComo('docente'); }
+  if (d.ok) { guardarSesion('docente', d.token, '', d.nombre); entrarComo('docente'); }
   else msg(d.error || 'No se pudo iniciar sesión', 'bad');
 }
 async function registrarDocente(){
@@ -978,12 +1233,12 @@ async function registrarDocente(){
     nombre: $('docRegNombre').value.trim(), email: $('docRegEmail').value.trim(),
     password: $('docRegPass').value, codigo: $('docRegCodigo').value.trim()
   });
-  if (d.ok) { guardarSesion('docente', d.token); entrarComo('docente'); }
+  if (d.ok) { guardarSesion('docente', d.token, '', d.nombre); entrarComo('docente'); }
   else msg(d.error || 'No se pudo registrar', 'bad');
 }
 async function loginEstudiante(){
   var d = await post('/login-estudiante', { documento: $('estLoginDoc').value.trim(), password: $('estLoginPass').value });
-  if (d.ok) { guardarSesion('estudiante', d.token); entrarComo('estudiante'); }
+  if (d.ok) { guardarSesion('estudiante', d.token, '', d.nombre); entrarComo('estudiante'); }
   else msg(d.error || 'No se pudo iniciar sesión', 'bad');
 }
 async function registrarEstudiante(){
@@ -993,7 +1248,7 @@ async function registrarEstudiante(){
     nombre: $('estRegNombre').value.trim(), documento: $('estRegDoc').value.trim(),
     email: $('estRegEmail').value.trim(), password: p1
   });
-  if (d.ok) { guardarSesion('estudiante', d.token); entrarComo('estudiante'); }
+  if (d.ok) { guardarSesion('estudiante', d.token, '', d.nombre); entrarComo('estudiante'); }
   else msg(d.error || 'No se pudo registrar', 'bad');
 }
 
@@ -1024,6 +1279,8 @@ async function cargarMisCursos(){
   try {
     var d = await api('/me');
     $('stNombre').textContent = d.nombre || '';
+    $('stNombreHero').textContent = (d.nombre || 'estudiante').split(/\\s+/)[0];
+    $('stAvatar').textContent = inicial(d.nombre || 'Estudiante');
     if (!d.cursos.length) { $('stCursos').textContent = 'Todavía no estás inscrito en ningún curso.'; return; }
     $('stCursos').innerHTML = d.cursos.map(function(c){
       var asistio = (c.presente || 0) + (c.tarde || 0);
@@ -1054,12 +1311,16 @@ document.querySelectorAll('#tabsNav button').forEach(function(btn){
   btn.onclick = function(){
     document.querySelectorAll('#tabsNav button').forEach(function(b){ b.classList.remove('on'); });
     btn.classList.add('on');
-    document.querySelectorAll('#app section').forEach(function(s){ s.classList.add('hidden'); });
+    document.querySelectorAll('#app .tab-panel').forEach(function(s){ s.classList.add('hidden'); });
     $('tab-' + btn.dataset.tab).classList.remove('hidden');
+    var meta = TAB_META[btn.dataset.tab] || ['Panel', ''];
+    $('pageTitle').textContent = meta[0];
+    $('pageSub').textContent = meta[1];
+    closeMenu();
   };
 });
 async function initApp(){
-  $('asisFecha').value = new Date().toISOString().slice(0, 10);
+  $('asisFecha').value = hoyLocal();
   await Promise.all([cargarCursos(), cargarEstudiantes()]);
   if (ROLE === 'admin') cargarDocentes();
 }
@@ -1070,7 +1331,7 @@ function mostrarClave(texto, clave){
 // ---------- QR ----------
 function mostrarQR(id, url, nota){
   var img = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=4&data=' + encodeURIComponent(url);
-  $(id).innerHTML = '<div class="qrbox"><img src="' + img + '" width="240" height="240" alt="Código QR">' +
+  $(id).innerHTML = '<div class="qrbox"><img src="' + img + '" width="200" height="200" alt="Código QR">' +
     '<div class="side"><p class="muted">' + esc(nota) + '</p>' +
     '<input readonly value="' + esc(url) + '" onclick="this.select()">' +
     '<div class="actions"><button class="btn ghost sm" data-url="' + esc(url) + '" onclick="copiar(this)">Copiar enlace</button></div></div></div>';
@@ -1103,8 +1364,9 @@ async function generarQRRegistro(conCurso){
 // ---------- Cursos ----------
 async function cargarCursos(){
   courses = await api('/courses');
+  $('statCursos').textContent = courses.length;
   $('listaCursos').innerHTML = courses.map(function(c){
-    return '<tr><td>' + esc(c.nombre) + '</td><td class="muted">' + esc(c.descripcion || '') + '</td>' +
+    return '<tr><td><strong>' + esc(c.nombre) + '</strong></td><td class="muted">' + esc(c.descripcion || '—') + '</td>' +
       '<td class="acc"><button class="btn danger sm" onclick="borrarCurso(' + c.id + ')">Eliminar</button></td></tr>';
   }).join('') || '<tr><td class="muted" colspan="3">Aún no hay cursos. Crea el primero arriba.</td></tr>';
   var opts = courses.map(function(c){ return '<option value="' + c.id + '">' + esc(c.nombre) + '</option>'; }).join('');
@@ -1126,8 +1388,9 @@ async function borrarCurso(id){
 // ---------- Estudiantes ----------
 async function cargarEstudiantes(){
   students = await api('/students');
+  $('statEstudiantes').textContent = students.length;
   $('listaEstudiantes').innerHTML = students.map(function(s){
-    return '<tr><td>' + esc(s.nombre) + '</td><td class="muted">' + esc(s.documento || '') + '</td>' +
+    return '<tr><td><strong>' + esc(s.nombre) + '</strong></td><td class="muted">' + esc(s.documento || '—') + '</td>' +
       '<td>' + (s.tiene_cuenta ? '<span class="badge b-si">Con cuenta</span>' : '<span class="badge b-no">Sin cuenta</span>') + '</td>' +
       '<td class="acc"><button class="btn ghost sm" data-id="' + s.id + '" data-nombre="' + esc(s.nombre) + '" onclick="resetEst(this)">Restablecer clave</button>' +
       '<button class="btn danger sm" onclick="borrarEstudiante(' + s.id + ')">Eliminar</button></td></tr>';
@@ -1174,7 +1437,7 @@ async function cargarInscritos(){
   if (!courseId) return;
   var list = await api('/courses/' + courseId + '/students');
   $('listaInscritos').innerHTML = list.map(function(s){
-    return '<tr><td>' + esc(s.nombre) + '</td><td class="muted">' + esc(s.documento || '') + '</td>' +
+    return '<tr><td><strong>' + esc(s.nombre) + '</strong></td><td class="muted">' + esc(s.documento || '—') + '</td>' +
       '<td class="acc"><button class="btn danger sm" onclick="quitarInscripcion(' + s.enrollment_id + ')">Quitar</button></td></tr>';
   }).join('') || '<tr><td class="muted" colspan="3">Nadie inscrito todavía.</td></tr>';
 }
@@ -1190,7 +1453,7 @@ async function cargarAsistencia(){
   $('listaAsistencia').innerHTML = list.map(function(r){
     return '<tr data-enrollment="' + r.enrollment_id + '"><td>' + esc(r.nombre) + '</td><td><div class="estado-btns">' +
       estados.map(function(e){
-        return '<button class="' + (r.estado === e ? 'sel-' + e : '') + '" onclick="marcar(this,&quot;' + e + '&quot;)">' + e + '</button>';
+        return '<button type="button" class="' + (r.estado === e ? 'sel-' + e : '') + '" onclick="marcar(this,&quot;' + e + '&quot;)">' + e + '</button>';
       }).join('') + '</div></td></tr>';
   }).join('') || '<tr><td class="muted" colspan="2">Este curso no tiene estudiantes inscritos.</td></tr>';
 }
@@ -1221,7 +1484,7 @@ async function cargarHistorial(){
   if (!courseId) return;
   var list = await api('/courses/' + courseId + '/history');
   $('listaHistorial').innerHTML = list.map(function(r){
-    return '<tr><td>' + esc(r.nombre) + '</td><td>' + esc(r.fecha) + '</td><td><span class="badge b-' + esc(r.estado) + '">' + esc(r.estado) + '</span></td></tr>';
+    return '<tr><td><strong>' + esc(r.nombre) + '</strong></td><td class="muted">' + esc(r.fecha) + '</td><td><span class="badge b-' + esc(r.estado) + '">' + esc(r.estado) + '</span></td></tr>';
   }).join('') || '<tr><td class="muted" colspan="3">Sin registros todavía.</td></tr>';
 }
 
@@ -1229,8 +1492,10 @@ async function cargarHistorial(){
 async function cargarDocentes(){
   if (ROLE !== 'admin') return;
   var list = await api('/teachers');
+  $('statDocentesCard').classList.remove('hidden');
+  $('statDocentes').textContent = list.length;
   $('listaDocentes').innerHTML = list.map(function(d){
-    return '<tr><td>' + esc(d.nombre) + '</td><td class="muted">' + esc(d.email) + '</td>' +
+    return '<tr><td><strong>' + esc(d.nombre) + '</strong></td><td class="muted">' + esc(d.email) + '</td>' +
       '<td class="acc"><button class="btn ghost sm" data-id="' + d.id + '" data-nombre="' + esc(d.nombre) + '" onclick="resetDoc(this)">Restablecer clave</button>' +
       '<button class="btn danger sm" onclick="borrarDocente(' + d.id + ')">Eliminar</button></td></tr>';
   }).join('') || '<tr><td class="muted" colspan="3">Aún no hay docentes registrados.</td></tr>';

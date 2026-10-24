@@ -1,0 +1,6 @@
+# Copia este archivo como .dev.vars para desarrollo local.
+# No subas .dev.vars al repositorio.
+
+API_KEY="clave-local-de-administrador"
+SESSION_SECRET="cadena-larga-y-aleatoria-para-firmar-sesiones"
+CODIGO_DOCENTE="codigo-de-invitacion-opcional"
