@@ -1,12 +1,87 @@
 // ==========================================================
-// Sistema de Asistencia - Cloudflare Worker + D1  (v3)
+// Sistema de Asistencia - Cloudflare Worker + D1  (v4)
 // ==========================================================
 
-function json(data, status = 200) {
+import qrcode from "./qrcode.mjs";
+import { stringToBytes } from "./qrcode_UTF8.mjs";
+
+qrcode.stringToBytes = stringToBytes;
+
+const ADMIN_COOKIE = "asistencia_admin";
+const ADMIN_SESSION_MS = 12 * 60 * 60 * 1000;
+const DIA = 24 * 60 * 60 * 1000;
+const MAX_ATTENDANCE_BATCH = 300;
+const MAX_HISTORY = 500;
+const ESTADOS = new Set(["presente", "ausente", "tarde", "justificado"]);
+
+function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      ...headers,
+    },
   });
+}
+
+// ---------- Utilidades ----------
+function safeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function intId(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function isValidDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(value + "T00:00:00Z");
+  if (Number.isNaN(date.getTime())) return false;
+  return date.toISOString().slice(0, 10) === value;
+}
+
+function getCookie(request, name) {
+  const raw = request.headers.get("Cookie") || "";
+  for (const part of raw.split(";")) {
+    const index = part.indexOf("=");
+    if (index === -1) continue;
+    if (part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return null;
+}
+
+function adminCookie(request, token) {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${ADMIN_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_MS / 1000)}${secure}`;
+}
+
+function clearAdminCookie() {
+  return `${ADMIN_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`;
+}
+
+function sameOrigin(request) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    const requestUrl = new URL(request.url);
+    return originUrl.protocol === requestUrl.protocol && originUrl.host === requestUrl.host;
+  } catch (e) {
+    return false;
+  }
+}
+
+function actorFromSession(session) {
+  return {
+    rol: session.role,
+    id: session.id || null,
+    nombre: session.nombre || (session.role === "admin" ? "Administrador" : session.role),
+  };
 }
 
 // ---------- Contraseñas (PBKDF2) ----------
@@ -23,7 +98,6 @@ function randomHex(bytes = 16) {
   crypto.getRandomValues(arr);
   return bufToHex(arr);
 }
-// Clave temporal legible (sin letras que se confunden: 0/O, 1/l/I)
 function tempPassword() {
   const chars = "abcdefghjkmnpqrstuvwxyz23456789";
   const a = new Uint8Array(8);
@@ -35,7 +109,8 @@ async function hashPassword(password, saltHex) {
   const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", salt: hexToBuf(saltHex), iterations: 100000, hash: "SHA-256" },
-    keyMaterial, 256
+    keyMaterial,
+    256
   );
   return bufToHex(bits);
 }
@@ -77,123 +152,300 @@ async function verifyToken(token, secret) {
   }
 }
 
-// Devuelve { role: 'admin' } o { role: 'docente'|'estudiante', id, nombre, ... } o null
+async function validateSessionPayload(payload, env) {
+  if (!payload || !payload.role) return null;
+  if (payload.role === "docente" || payload.role === "estudiante") {
+    const table = payload.role === "docente" ? "teachers" : "students";
+    try {
+      const row = await env.DB.prepare(
+        `SELECT session_version${payload.role === "estudiante" ? ", activo" : ""} FROM ${table} WHERE id = ?`
+      )
+        .bind(payload.id)
+        .first();
+      if (!row) return null;
+      if (payload.role === "estudiante" && row.activo === 0) return null;
+      const current = row.session_version == null ? 1 : row.session_version;
+      const tokenVersion = payload.sv == null ? 1 : payload.sv;
+      if (current !== tokenVersion) return null;
+    } catch (e) {
+      // Compatibilidad temporal si la migración 003 aún no se aplicó.
+      console.error("No se pudo verificar session_version", e);
+    }
+  }
+  return payload;
+}
+
 async function getSession(request, env) {
   const apiKey = request.headers.get("X-API-Key");
-  if (apiKey && env.API_KEY && apiKey === env.API_KEY) return { role: "admin" };
+  if (apiKey && env.API_KEY && safeEqual(apiKey, env.API_KEY)) return { role: "admin", nombre: "Administrador" };
+
   const auth = request.headers.get("Authorization");
   if (auth && auth.startsWith("Bearer ") && env.SESSION_SECRET) {
     const payload = await verifyToken(auth.slice(7), env.SESSION_SECRET);
-    if (payload && payload.role) return payload;
+    return validateSessionPayload(payload, env);
+  }
+
+  const cookieToken = getCookie(request, ADMIN_COOKIE);
+  if (cookieToken && env.SESSION_SECRET) {
+    const payload = await verifyToken(cookieToken, env.SESSION_SECRET);
+    if (payload && payload.role === "admin") return payload;
   }
   return null;
 }
 
-const DIA = 24 * 60 * 60 * 1000;
+// ---------- Rate limiting ----------
+async function enforceRateLimit(request, env, bucket, limit, windowMs) {
+  const ip =
+    request.headers.get("CF-Connecting-IP") ||
+    (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim() ||
+    "local";
+  const key = bucket + ":" + ip;
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO rate_limits (key, window_start, count) VALUES (?, ?, 1)
+       ON CONFLICT(key) DO UPDATE SET
+         count = CASE WHEN rate_limits.window_start <= ? THEN 1 ELSE rate_limits.count + 1 END,
+         window_start = CASE WHEN rate_limits.window_start <= ? THEN ? ELSE rate_limits.window_start END`
+    ).bind(key, now, cutoff, cutoff, now).run();
 
+    const row = await env.DB.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?").bind(key).first();
+    if (row && row.count > limit) {
+      return { ok: false, retry: Math.max(1, Math.ceil((row.window_start + windowMs - now) / 1000)) };
+    }
+    if (Math.random() < 0.02) {
+      await env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 7 * DIA).run();
+    }
+    return { ok: true };
+  } catch (e) {
+    // Si la migración 003 aún no se aplicó, no bloqueamos el acceso.
+    console.error("No se pudo aplicar rate limiting", e);
+    return { ok: true };
+  }
+}
+
+function rateLimited(retry) {
+  return json(
+    { error: "Demasiados intentos. Espera unos minutos e inténtalo de nuevo." },
+    429,
+    { "Retry-After": String(retry) }
+  );
+}
+
+// ---------- Alcance por rol ----------
+function courseFilter(session, alias = "c") {
+  if (session.role === "admin") return { sql: "1=1", binds: [] };
+  return { sql: `(${alias}.teacher_id = ? OR ${alias}.teacher_id IS NULL)`, binds: [session.id] };
+}
+
+function studentFilter(session, alias = "s") {
+  if (session.role === "admin") return { sql: "1=1", binds: [] };
+  return {
+    sql: `(${alias}.teacher_id = ? OR ${alias}.teacher_id IS NULL OR EXISTS (
+      SELECT 1 FROM enrollments e2
+      JOIN courses c2 ON c2.id = e2.course_id
+      WHERE e2.student_id = ${alias}.id AND (c2.teacher_id = ? OR c2.teacher_id IS NULL)
+    ))`,
+    binds: [session.id, session.id],
+  };
+}
+
+function canAccessCourse(session, course) {
+  return !!course && (session.role === "admin" || course.teacher_id === session.id || course.teacher_id === null);
+}
+
+function canManageCourse(session, course) {
+  return !!course && (session.role === "admin" || course.teacher_id === session.id);
+}
+
+function canManageStudent(session, student) {
+  return !!student && (session.role === "admin" || student.teacher_id === session.id);
+}
+
+async function getVisibleCourse(env, session, courseId) {
+  const filter = courseFilter(session);
+  return env.DB.prepare(
+    `SELECT c.*, t.nombre AS docente
+     FROM courses c
+     LEFT JOIN teachers t ON t.id = c.teacher_id
+     WHERE c.id = ? AND ${filter.sql}`
+  ).bind(courseId, ...filter.binds).first();
+}
+
+async function getVisibleStudent(env, session, studentId) {
+  const filter = studentFilter(session);
+  return env.DB.prepare(
+    `SELECT s.*, t.nombre AS docente
+     FROM students s
+     LEFT JOIN teachers t ON t.id = s.teacher_id
+     WHERE s.id = ? AND ${filter.sql}`
+  ).bind(studentId, ...filter.binds).first();
+}
+
+async function teacherExists(env, teacherId) {
+  if (!teacherId) return true;
+  return !!(await env.DB.prepare("SELECT id FROM teachers WHERE id = ?").bind(teacherId).first());
+}
+
+// ---------- Handlers ----------
 async function handleApi(request, env, url) {
   const path = url.pathname.replace(/^\/api/, "");
   const method = request.method;
 
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !sameOrigin(request)) {
+    return json({ error: "Origen no permitido" }, 403);
+  }
+
   // ---------- RUTAS PÚBLICAS ----------
 
-  // Login administrador (clave maestra)
+  if (path === "/logout" && method === "POST") {
+    return json({ ok: true }, 200, { "Set-Cookie": clearAdminCookie() });
+  }
+
   if (path === "/login" && method === "POST") {
+    if (!env.SESSION_SECRET) return json({ error: "Falta configurar SESSION_SECRET en el servidor" }, 500);
+    const rl = await enforceRateLimit(request, env, "login-admin", 10, 10 * 60 * 1000);
+    if (!rl.ok) return rateLimited(rl.retry);
+
     const body = await request.json().catch(() => ({}));
-    if (body.apiKey && body.apiKey === env.API_KEY) return json({ ok: true, role: "admin" });
+    if (body.apiKey && env.API_KEY && safeEqual(String(body.apiKey), env.API_KEY)) {
+      const token = await createToken(
+        { role: "admin", nombre: "Administrador", exp: Date.now() + ADMIN_SESSION_MS },
+        env.SESSION_SECRET
+      );
+      return json({ ok: true, role: "admin", nombre: "Administrador" }, 200, {
+        "Set-Cookie": adminCookie(request, token),
+      });
+    }
     return json({ ok: false, error: "Clave incorrecta" }, 401);
   }
 
-  // Login docente
   if (path === "/login-docente" && method === "POST") {
+    if (!env.SESSION_SECRET) return json({ error: "Falta configurar SESSION_SECRET en el servidor" }, 500);
+    const rl = await enforceRateLimit(request, env, "login-docente", 15, 10 * 60 * 1000);
+    if (!rl.ok) return rateLimited(rl.retry);
+
     const body = await request.json().catch(() => ({}));
     const { results } = await env.DB.prepare("SELECT * FROM teachers WHERE email = ?")
-      .bind((body.email || "").toLowerCase().trim()).all();
+      .bind(String(body.email || "").toLowerCase().trim()).all();
     const t = results[0];
     if (!t) return json({ ok: false, error: "Email o contraseña incorrectos" }, 401);
-    const hash = await hashPassword(body.password || "", t.salt);
-    if (hash !== t.password_hash) return json({ ok: false, error: "Email o contraseña incorrectos" }, 401);
+    const hash = await hashPassword(String(body.password || ""), t.salt);
+    if (!safeEqual(hash, t.password_hash)) return json({ ok: false, error: "Email o contraseña incorrectos" }, 401);
     const token = await createToken(
-      { role: "docente", id: t.id, nombre: t.nombre, email: t.email, exp: Date.now() + 7 * DIA },
+      {
+        role: "docente",
+        id: t.id,
+        nombre: t.nombre,
+        email: t.email,
+        sv: t.session_version == null ? 1 : t.session_version,
+        exp: Date.now() + 7 * DIA,
+      },
       env.SESSION_SECRET
     );
     return json({ ok: true, role: "docente", token, nombre: t.nombre });
   }
 
-  // Registro de docentes. Si configuras el secreto CODIGO_DOCENTE, se exige como código de invitación.
   if (path === "/register-docente" && method === "POST") {
+    if (!env.SESSION_SECRET) return json({ error: "Falta configurar SESSION_SECRET en el servidor" }, 500);
+    const rl = await enforceRateLimit(request, env, "register-docente", 10, 10 * 60 * 1000);
+    if (!rl.ok) return rateLimited(rl.retry);
+
     const b = await request.json().catch(() => ({}));
-    if (env.CODIGO_DOCENTE && b.codigo !== env.CODIGO_DOCENTE) {
+    if (!env.CODIGO_DOCENTE) {
+      return json({ error: "El registro público de docentes está deshabilitado. Pide al administrador que cree tu cuenta." }, 403);
+    }
+    if (!b.codigo || !safeEqual(String(b.codigo), env.CODIGO_DOCENTE)) {
       return json({ error: "Código de invitación incorrecto" }, 403);
     }
     if (!b.nombre || !b.email || !b.password) return json({ error: "Faltan datos" }, 400);
-    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    if (String(b.password).length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+
     const salt = randomHex();
-    const hash = await hashPassword(b.password, salt);
-    const email = b.email.toLowerCase().trim();
+    const hash = await hashPassword(String(b.password), salt);
+    const email = String(b.email).toLowerCase().trim();
     try {
       const r = await env.DB.prepare(
         "INSERT INTO teachers (nombre, email, password_hash, salt) VALUES (?, ?, ?, ?)"
-      ).bind(b.nombre, email, hash, salt).run();
+      ).bind(String(b.nombre).trim(), email, hash, salt).run();
       const token = await createToken(
-        { role: "docente", id: r.meta.last_row_id, nombre: b.nombre, email, exp: Date.now() + 7 * DIA },
+        { role: "docente", id: r.meta.last_row_id, nombre: String(b.nombre).trim(), email, sv: 1, exp: Date.now() + 7 * DIA },
         env.SESSION_SECRET
       );
-      return json({ ok: true, token, nombre: b.nombre });
+      return json({ ok: true, token, nombre: String(b.nombre).trim() });
     } catch (e) {
       return json({ error: "Ese email ya está registrado. Inicia sesión en vez de registrarte." }, 400);
     }
   }
 
-  // Registro de estudiantes. Si el documento ya existe sin contraseña (lo creó un docente), lo "reclama".
   if (path === "/register-estudiante" && method === "POST") {
+    if (!env.SESSION_SECRET) return json({ error: "Falta configurar SESSION_SECRET en el servidor" }, 500);
+    const rl = await enforceRateLimit(request, env, "register-estudiante", 10, 10 * 60 * 1000);
+    if (!rl.ok) return rateLimited(rl.retry);
+
     const b = await request.json().catch(() => ({}));
-    const documento = (b.documento || "").trim();
+    const documento = String(b.documento || "").trim();
     if (!b.nombre || !documento || !b.password) return json({ error: "Faltan datos (nombre, documento y contraseña)" }, 400);
-    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    if (String(b.password).length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+
     const salt = randomHex();
-    const hash = await hashPassword(b.password, salt);
+    const hash = await hashPassword(String(b.password), salt);
     const { results } = await env.DB.prepare("SELECT * FROM students WHERE documento = ?").bind(documento).all();
     const existente = results[0];
     let studentId;
+    let sessionVersion = 1;
+
     if (existente) {
       if (existente.password_hash) {
         return json({ error: "Ya existe una cuenta con ese documento. Inicia sesión; si olvidaste la contraseña, pide a tu docente que la restablezca." }, 400);
       }
+      if (existente.activo === 0) {
+        return json({ error: "Esta cuenta está archivada. Pide a tu docente que la reactive antes de registrarte." }, 403);
+      }
+      sessionVersion = existente.session_version == null ? 1 : existente.session_version;
       await env.DB.prepare(
-        "UPDATE students SET password_hash = ?, salt = ?, nombre = ?, email = COALESCE(?, email) WHERE id = ?"
-      ).bind(hash, salt, b.nombre, b.email || null, existente.id).run();
+        "UPDATE students SET password_hash = ?, salt = ?, nombre = ?, email = COALESCE(?, email), session_version = ? WHERE id = ?"
+      ).bind(hash, salt, String(b.nombre).trim(), b.email || null, sessionVersion, existente.id).run();
       studentId = existente.id;
     } else {
       const r = await env.DB.prepare(
         "INSERT INTO students (nombre, documento, email, telefono, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?)"
-      ).bind(b.nombre, documento, b.email || null, b.telefono || null, hash, salt).run();
+      ).bind(String(b.nombre).trim(), documento, b.email || null, b.telefono || null, hash, salt).run();
       studentId = r.meta.last_row_id;
     }
     const token = await createToken(
-      { role: "estudiante", id: studentId, nombre: b.nombre, exp: Date.now() + 30 * DIA },
+      { role: "estudiante", id: studentId, nombre: String(b.nombre).trim(), sv: sessionVersion, exp: Date.now() + 30 * DIA },
       env.SESSION_SECRET
     );
-    return json({ ok: true, token, nombre: b.nombre });
+    return json({ ok: true, token, nombre: String(b.nombre).trim() });
   }
 
-  // Login estudiante (documento + contraseña)
   if (path === "/login-estudiante" && method === "POST") {
+    if (!env.SESSION_SECRET) return json({ error: "Falta configurar SESSION_SECRET en el servidor" }, 500);
+    const rl = await enforceRateLimit(request, env, "login-estudiante", 15, 10 * 60 * 1000);
+    if (!rl.ok) return rateLimited(rl.retry);
+
     const body = await request.json().catch(() => ({}));
     const { results } = await env.DB.prepare("SELECT * FROM students WHERE documento = ?")
-      .bind((body.documento || "").trim()).all();
+      .bind(String(body.documento || "").trim()).all();
     const s = results[0];
-    if (!s || !s.password_hash) return json({ ok: false, error: "Documento o contraseña incorrectos" }, 401);
-    const hash = await hashPassword(body.password || "", s.salt);
-    if (hash !== s.password_hash) return json({ ok: false, error: "Documento o contraseña incorrectos" }, 401);
+    if (!s || !s.password_hash || s.activo === 0) return json({ ok: false, error: "Documento o contraseña incorrectos" }, 401);
+    const hash = await hashPassword(String(body.password || ""), s.salt);
+    if (!safeEqual(hash, s.password_hash)) return json({ ok: false, error: "Documento o contraseña incorrectos" }, 401);
     const token = await createToken(
-      { role: "estudiante", id: s.id, nombre: s.nombre, exp: Date.now() + 30 * DIA },
+      {
+        role: "estudiante",
+        id: s.id,
+        nombre: s.nombre,
+        sv: s.session_version == null ? 1 : s.session_version,
+        exp: Date.now() + 30 * DIA,
+      },
       env.SESSION_SECRET
     );
     return json({ ok: true, role: "estudiante", token, nombre: s.nombre });
   }
 
-  // Info pública de un código QR (para mostrar el nombre del curso antes de iniciar sesión)
   if (path === "/public/token-info" && method === "GET") {
     const p = await verifyToken(url.searchParams.get("token") || "", env.SESSION_SECRET);
     if (!p || !p.course_id) return json({ ok: false });
@@ -205,13 +457,37 @@ async function handleApi(request, env, url) {
   const session = await getSession(request, env);
   if (!session) return json({ error: "No autorizado" }, 401);
 
+  if (path === "/session" && method === "GET") {
+    return json({ ok: true, role: session.role, nombre: session.nombre || null, id: session.id || null });
+  }
+
+  // ---------- QR PROPIO ----------
+  if (path === "/qr" && method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const data = typeof b.data === "string" ? b.data : "";
+    if (!data || data.length > 2048) return json({ error: "Datos del QR inválidos" }, 400);
+    try {
+      const qr = qrcode(0, "M");
+      qr.addData(data);
+      qr.make();
+      const svg = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
+      return json({ svg });
+    } catch (e) {
+      console.error("Error generando QR", e);
+      return json({ error: "No se pudo generar el código QR" }, 400);
+    }
+  }
+
   // QR de asistencia: lo genera admin/docente para un curso + fecha (válido 3 horas)
   if (path === "/attendance/session" && method === "POST") {
     if (session.role === "estudiante") return json({ error: "No autorizado" }, 403);
     const b = await request.json().catch(() => ({}));
-    if (!b.course_id || !b.fecha) return json({ error: "Falta course_id o fecha" }, 400);
+    const courseId = intId(b.course_id);
+    if (!courseId || !isValidDate(b.fecha)) return json({ error: "Curso o fecha inválidos" }, 400);
+    const course = await getVisibleCourse(env, session, courseId);
+    if (!course || !course.activo) return json({ error: "Curso no disponible" }, 404);
     const token = await createToken(
-      { type: "checkin", course_id: Number(b.course_id), fecha: b.fecha, exp: Date.now() + 3 * 60 * 60 * 1000 },
+      { type: "checkin", course_id: courseId, fecha: b.fecha, exp: Date.now() + 3 * 60 * 60 * 1000 },
       env.SESSION_SECRET
     );
     return json({ token });
@@ -221,9 +497,12 @@ async function handleApi(request, env, url) {
   if (path === "/enroll/session" && method === "POST") {
     if (session.role === "estudiante") return json({ error: "No autorizado" }, 403);
     const b = await request.json().catch(() => ({}));
-    if (!b.course_id) return json({ error: "Falta course_id" }, 400);
+    const courseId = intId(b.course_id);
+    if (!courseId) return json({ error: "Falta course_id" }, 400);
+    const course = await getVisibleCourse(env, session, courseId);
+    if (!course || !course.activo) return json({ error: "Curso no disponible" }, 404);
     const token = await createToken(
-      { type: "enroll", course_id: Number(b.course_id), exp: Date.now() + 7 * DIA },
+      { type: "enroll", course_id: courseId, exp: Date.now() + 7 * DIA },
       env.SESSION_SECRET
     );
     return json({ token });
@@ -234,26 +513,55 @@ async function handleApi(request, env, url) {
     if (session.role !== "estudiante") return json({ error: "Solo un estudiante puede marcar su asistencia aquí" }, 403);
     const b = await request.json().catch(() => ({}));
     const payload = await verifyToken(b.token || "", env.SESSION_SECRET);
-    if (!payload || payload.type !== "checkin") return json({ error: "El código es inválido o ya venció. Pide uno nuevo a tu docente." }, 400);
+    if (!payload || payload.type !== "checkin" || !isValidDate(payload.fecha)) {
+      return json({ error: "El código es inválido o ya venció. Pide uno nuevo a tu docente." }, 400);
+    }
     const enr = await env.DB.prepare(
-      "SELECT id FROM enrollments WHERE student_id = ? AND course_id = ?"
+      `SELECT e.id, e.course_id, c.nombre AS curso, c.activo
+       FROM enrollments e JOIN courses c ON c.id = e.course_id
+       WHERE e.student_id = ? AND e.course_id = ?`
     ).bind(session.id, payload.course_id).first();
     if (!enr) return json({ error: "No estás inscrito en este curso. Pide a tu docente que te inscriba." }, 403);
-    await env.DB.prepare(
-      `INSERT INTO attendance (enrollment_id, fecha, estado) VALUES (?, ?, 'presente')
-       ON CONFLICT(enrollment_id, fecha) DO UPDATE SET estado = 'presente'`
-    ).bind(enr.id, payload.fecha).run();
-    const curso = await env.DB.prepare("SELECT nombre FROM courses WHERE id = ?").bind(payload.course_id).first();
-    return json({ ok: true, curso: curso ? curso.nombre : "el curso", fecha: payload.fecha });
+    if (!enr.activo) return json({ error: "Este curso ya no está disponible." }, 403);
+
+    const actor = actorFromSession(session);
+    const res = await env.DB.prepare(
+      `INSERT INTO attendance (enrollment_id, fecha, estado, origen, marcado_por_rol, marcado_por_id, marcado_por_nombre, updated_at)
+       VALUES (?, ?, 'presente', 'qr', ?, ?, ?, datetime('now'))
+       ON CONFLICT(enrollment_id, fecha) DO NOTHING`
+    ).bind(enr.id, payload.fecha, actor.rol, actor.id, actor.nombre).run();
+
+    const inserted = res.meta && res.meta.changes > 0;
+    if (inserted) {
+      await env.DB.prepare(
+        `INSERT INTO attendance_audit
+         (attendance_id, enrollment_id, course_id, fecha, estado_anterior, estado_nuevo, origen, actor_rol, actor_id, actor_nombre)
+         VALUES (NULL, ?, ?, ?, NULL, 'presente', 'qr', ?, ?, ?)`
+      ).bind(enr.id, enr.course_id, payload.fecha, actor.rol, actor.id, actor.nombre).run();
+    }
+    const actual = await env.DB.prepare(
+      "SELECT estado FROM attendance WHERE enrollment_id = ? AND fecha = ?"
+    ).bind(enr.id, payload.fecha).first();
+
+    return json({
+      ok: true,
+      ya: !inserted,
+      estado: actual ? actual.estado : "presente",
+      curso: enr.curso,
+      fecha: payload.fecha,
+    });
   }
 
   if (path === "/enroll/self" && method === "POST") {
     if (session.role !== "estudiante") return json({ error: "Solo un estudiante puede inscribirse aquí" }, 403);
     const b = await request.json().catch(() => ({}));
     const payload = await verifyToken(b.token || "", env.SESSION_SECRET);
-    if (!payload || payload.type !== "enroll") return json({ error: "El código es inválido o ya venció. Pide uno nuevo a tu docente." }, 400);
-    const curso = await env.DB.prepare("SELECT nombre FROM courses WHERE id = ?").bind(payload.course_id).first();
+    if (!payload || payload.type !== "enroll") {
+      return json({ error: "El código es inválido o ya venció. Pide uno nuevo a tu docente." }, 400);
+    }
+    const curso = await env.DB.prepare("SELECT id, nombre, activo FROM courses WHERE id = ?").bind(payload.course_id).first();
     if (!curso) return json({ error: "Ese curso ya no existe" }, 404);
+    if (!curso.activo) return json({ error: "Ese curso ya no está disponible" }, 403);
     const ya = await env.DB.prepare("SELECT id FROM enrollments WHERE student_id = ? AND course_id = ?")
       .bind(session.id, payload.course_id).first();
     if (!ya) {
@@ -263,11 +571,10 @@ async function handleApi(request, env, url) {
     return json({ ok: true, curso: curso.nombre, ya: !!ya });
   }
 
-  // Resumen del propio estudiante: sus cursos y su asistencia
   if (path === "/me" && method === "GET") {
     if (session.role !== "estudiante") return json({ error: "No autorizado" }, 403);
     const { results } = await env.DB.prepare(
-      `SELECT c.id, c.nombre,
+      `SELECT c.id, c.nombre, c.activo,
          SUM(CASE WHEN a.estado = 'presente' THEN 1 ELSE 0 END) AS presente,
          SUM(CASE WHEN a.estado = 'ausente' THEN 1 ELSE 0 END) AS ausente,
          SUM(CASE WHEN a.estado = 'tarde' THEN 1 ELSE 0 END) AS tarde,
@@ -282,19 +589,26 @@ async function handleApi(request, env, url) {
     return json({ nombre: session.nombre, cursos: results });
   }
 
-  // El estudiante cambia su propia contraseña
   if (path === "/me/password" && method === "POST") {
     if (session.role !== "estudiante") return json({ error: "No autorizado" }, 403);
     const b = await request.json().catch(() => ({}));
-    if (!b.nueva || b.nueva.length < 6) return json({ error: "La nueva contraseña debe tener al menos 6 caracteres" }, 400);
+    if (!b.nueva || String(b.nueva).length < 6) return json({ error: "La nueva contraseña debe tener al menos 6 caracteres" }, 400);
     const s = await env.DB.prepare("SELECT * FROM students WHERE id = ?").bind(session.id).first();
     if (!s || !s.password_hash) return json({ error: "Cuenta no encontrada" }, 404);
-    const actual = await hashPassword(b.actual || "", s.salt);
-    if (actual !== s.password_hash) return json({ error: "La contraseña actual no es correcta" }, 400);
+    const actual = await hashPassword(String(b.actual || ""), s.salt);
+    if (!safeEqual(actual, s.password_hash)) return json({ error: "La contraseña actual no es correcta" }, 400);
+
     const salt = randomHex();
-    const hash = await hashPassword(b.nueva, salt);
-    await env.DB.prepare("UPDATE students SET password_hash = ?, salt = ? WHERE id = ?").bind(hash, salt, s.id).run();
-    return json({ ok: true });
+    const hash = await hashPassword(String(b.nueva), salt);
+    const newVersion = (s.session_version == null ? 1 : s.session_version) + 1;
+    await env.DB.prepare(
+      "UPDATE students SET password_hash = ?, salt = ?, session_version = ? WHERE id = ?"
+    ).bind(hash, salt, newVersion, s.id).run();
+    const token = await createToken(
+      { role: "estudiante", id: s.id, nombre: s.nombre, sv: newVersion, exp: Date.now() + 30 * DIA },
+      env.SESSION_SECRET
+    );
+    return json({ ok: true, token });
   }
 
   // Todo lo que sigue es solo para admin/docente
@@ -320,21 +634,22 @@ async function handleApi(request, env, url) {
     const pass = tempPassword();
     const salt = randomHex();
     const hash = await hashPassword(pass, salt);
-    await env.DB.prepare("UPDATE teachers SET password_hash = ?, salt = ? WHERE id = ?")
-      .bind(hash, salt, teacherResetMatch[1]).run();
+    await env.DB.prepare(
+      "UPDATE teachers SET password_hash = ?, salt = ?, session_version = COALESCE(session_version, 1) + 1 WHERE id = ?"
+    ).bind(hash, salt, teacherResetMatch[1]).run();
     return json({ ok: true, password: pass });
   }
   if (path === "/teachers" && method === "POST") {
     if (session.role !== "admin") return json({ error: "Solo el administrador puede crear docentes así" }, 403);
     const b = await request.json().catch(() => ({}));
     if (!b.nombre || !b.email || !b.password) return json({ error: "Faltan datos" }, 400);
-    if (b.password.length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+    if (String(b.password).length < 6) return json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
     const salt = randomHex();
-    const hash = await hashPassword(b.password, salt);
+    const hash = await hashPassword(String(b.password), salt);
     try {
       const r = await env.DB.prepare(
         "INSERT INTO teachers (nombre, email, password_hash, salt) VALUES (?, ?, ?, ?)"
-      ).bind(b.nombre, b.email.toLowerCase().trim(), hash, salt).run();
+      ).bind(String(b.nombre).trim(), String(b.email).toLowerCase().trim(), hash, salt).run();
       return json({ id: r.meta.last_row_id });
     } catch (e) {
       return json({ error: "Ese email ya está registrado" }, 400);
@@ -343,66 +658,202 @@ async function handleApi(request, env, url) {
 
   // ---------- CURSOS ----------
   if (path === "/courses" && method === "GET") {
-    const { results } = await env.DB.prepare("SELECT * FROM courses ORDER BY nombre").all();
+    const filter = courseFilter(session);
+    const { results } = await env.DB.prepare(
+      `SELECT c.id, c.nombre, c.descripcion, c.teacher_id, c.activo, c.created_at, t.nombre AS docente
+       FROM courses c
+       LEFT JOIN teachers t ON t.id = c.teacher_id
+       WHERE ${filter.sql}
+       ORDER BY c.activo DESC, c.nombre`
+    ).bind(...filter.binds).all();
     return json(results);
   }
   if (path === "/courses" && method === "POST") {
     const b = await request.json().catch(() => ({}));
-    if (!b.nombre) return json({ error: "Falta el nombre del curso" }, 400);
-    const r = await env.DB.prepare("INSERT INTO courses (nombre, descripcion) VALUES (?, ?)")
-      .bind(b.nombre, b.descripcion || null).run();
+    const nombre = String(b.nombre || "").trim();
+    if (!nombre) return json({ error: "Falta el nombre del curso" }, 400);
+
+    let teacherId = session.role === "admin" ? null : session.id;
+    if (session.role === "admin" && b.teacher_id !== undefined && b.teacher_id !== null && b.teacher_id !== "") {
+      teacherId = intId(b.teacher_id);
+      if (!teacherId) return json({ error: "Docente inválido" }, 400);
+      if (!(await teacherExists(env, teacherId))) return json({ error: "El docente no existe" }, 400);
+    }
+    const r = await env.DB.prepare("INSERT INTO courses (nombre, descripcion, teacher_id) VALUES (?, ?, ?)")
+      .bind(nombre, b.descripcion ? String(b.descripcion).trim() : null, teacherId).run();
     return json({ id: r.meta.last_row_id });
   }
   const courseIdMatch = path.match(/^\/courses\/(\d+)$/);
-  if (courseIdMatch && method === "DELETE") {
-    await env.DB.prepare("DELETE FROM courses WHERE id = ?").bind(courseIdMatch[1]).run();
+  if (courseIdMatch && method === "PATCH") {
+    const course = await getVisibleCourse(env, session, Number(courseIdMatch[1]));
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
+    if (!canManageCourse(session, course)) return json({ error: "No autorizado para modificar este curso" }, 403);
+
+    const b = await request.json().catch(() => ({}));
+    const sets = [];
+    const binds = [];
+    if ("nombre" in b) {
+      const nombre = String(b.nombre || "").trim();
+      if (!nombre) return json({ error: "El nombre no puede estar vacío" }, 400);
+      sets.push("nombre = ?");
+      binds.push(nombre);
+    }
+    if ("descripcion" in b) {
+      sets.push("descripcion = ?");
+      binds.push(b.descripcion ? String(b.descripcion).trim() : null);
+    }
+    if (session.role === "admin" && "teacher_id" in b) {
+      let teacherId = null;
+      if (b.teacher_id !== null && b.teacher_id !== "" && b.teacher_id !== undefined) {
+        teacherId = intId(b.teacher_id);
+        if (!teacherId || !(await teacherExists(env, teacherId))) return json({ error: "Docente inválido" }, 400);
+      }
+      sets.push("teacher_id = ?");
+      binds.push(teacherId);
+    }
+    if ("activo" in b) {
+      sets.push("activo = ?");
+      binds.push(b.activo ? 1 : 0);
+    }
+    if (!sets.length) return json({ error: "No hay cambios para guardar" }, 400);
+    binds.push(course.id);
+    await env.DB.prepare(`UPDATE courses SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
     return json({ ok: true });
+  }
+  if (courseIdMatch && method === "DELETE") {
+    const course = await getVisibleCourse(env, session, Number(courseIdMatch[1]));
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
+    if (!canManageCourse(session, course)) return json({ error: "No autorizado para archivar este curso" }, 403);
+    await env.DB.prepare("UPDATE courses SET activo = 0 WHERE id = ?").bind(course.id).run();
+    return json({ ok: true, archivado: true });
   }
 
   // ---------- ESTUDIANTES ----------
   if (path === "/students" && method === "GET") {
-    // Ya no se envían password_hash ni salt al navegador
+    const filter = studentFilter(session);
     const { results } = await env.DB.prepare(
-      `SELECT id, nombre, documento, email, telefono,
-              (password_hash IS NOT NULL) AS tiene_cuenta
-       FROM students ORDER BY nombre`
-    ).all();
+      `SELECT s.id, s.nombre, s.documento, s.email, s.telefono, s.teacher_id, s.activo,
+              (s.password_hash IS NOT NULL) AS tiene_cuenta, t.nombre AS docente
+       FROM students s
+       LEFT JOIN teachers t ON t.id = s.teacher_id
+       WHERE ${filter.sql}
+       ORDER BY s.activo DESC, s.nombre`
+    ).bind(...filter.binds).all();
     return json(results);
   }
   if (path === "/students" && method === "POST") {
     const b = await request.json().catch(() => ({}));
-    if (!b.nombre) return json({ error: "Falta el nombre del estudiante" }, 400);
+    const nombre = String(b.nombre || "").trim();
+    if (!nombre) return json({ error: "Falta el nombre del estudiante" }, 400);
+
+    let teacherId = session.role === "admin" ? null : session.id;
+    if (session.role === "admin" && b.teacher_id !== undefined && b.teacher_id !== null && b.teacher_id !== "") {
+      teacherId = intId(b.teacher_id);
+      if (!teacherId) return json({ error: "Docente inválido" }, 400);
+      if (!(await teacherExists(env, teacherId))) return json({ error: "El docente no existe" }, 400);
+    }
     try {
       const r = await env.DB.prepare(
-        "INSERT INTO students (nombre, documento, email, telefono) VALUES (?, ?, ?, ?)"
-      ).bind(b.nombre, (b.documento || "").trim() || null, b.email || null, b.telefono || null).run();
+        "INSERT INTO students (nombre, documento, email, telefono, teacher_id) VALUES (?, ?, ?, ?, ?)"
+      ).bind(
+        nombre,
+        String(b.documento || "").trim() || null,
+        b.email ? String(b.email).trim() : null,
+        b.telefono ? String(b.telefono).trim() : null,
+        teacherId
+      ).run();
       return json({ id: r.meta.last_row_id });
     } catch (e) {
       return json({ error: "Ese documento ya está registrado" }, 400);
     }
   }
   const studentIdMatch = path.match(/^\/students\/(\d+)$/);
+  if (studentIdMatch && method === "PATCH") {
+    const student = await getVisibleStudent(env, session, Number(studentIdMatch[1]));
+    if (!student) return json({ error: "Estudiante no encontrado" }, 404);
+    if (!canManageStudent(session, student)) return json({ error: "No autorizado para modificar este estudiante" }, 403);
+
+    const b = await request.json().catch(() => ({}));
+    const sets = [];
+    const binds = [];
+    if ("nombre" in b) {
+      const nombre = String(b.nombre || "").trim();
+      if (!nombre) return json({ error: "El nombre no puede estar vacío" }, 400);
+      sets.push("nombre = ?");
+      binds.push(nombre);
+    }
+    if ("documento" in b) {
+      sets.push("documento = ?");
+      binds.push(String(b.documento || "").trim() || null);
+    }
+    if ("email" in b) {
+      sets.push("email = ?");
+      binds.push(b.email ? String(b.email).trim() : null);
+    }
+    if ("telefono" in b) {
+      sets.push("telefono = ?");
+      binds.push(b.telefono ? String(b.telefono).trim() : null);
+    }
+    if (session.role === "admin" && "teacher_id" in b) {
+      let teacherId = null;
+      if (b.teacher_id !== null && b.teacher_id !== "" && b.teacher_id !== undefined) {
+        teacherId = intId(b.teacher_id);
+        if (!teacherId || !(await teacherExists(env, teacherId))) return json({ error: "Docente inválido" }, 400);
+      }
+      sets.push("teacher_id = ?");
+      binds.push(teacherId);
+    }
+    if ("activo" in b) {
+      sets.push("activo = ?");
+      binds.push(b.activo ? 1 : 0);
+    }
+    if (!sets.length) return json({ error: "No hay cambios para guardar" }, 400);
+    binds.push(student.id);
+    try {
+      await env.DB.prepare(`UPDATE students SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+      return json({ ok: true });
+    } catch (e) {
+      return json({ error: "Ese documento ya está registrado" }, 400);
+    }
+  }
   if (studentIdMatch && method === "DELETE") {
-    await env.DB.prepare("DELETE FROM students WHERE id = ?").bind(studentIdMatch[1]).run();
-    return json({ ok: true });
+    const student = await getVisibleStudent(env, session, Number(studentIdMatch[1]));
+    if (!student) return json({ error: "Estudiante no encontrado" }, 404);
+    if (!canManageStudent(session, student)) return json({ error: "No autorizado para archivar este estudiante" }, 403);
+    await env.DB.prepare("UPDATE students SET activo = 0 WHERE id = ?").bind(student.id).run();
+    return json({ ok: true, archivado: true });
   }
   // Restablecer contraseña de un estudiante: genera una clave temporal
   const studentResetMatch = path.match(/^\/students\/(\d+)\/reset-password$/);
   if (studentResetMatch && method === "POST") {
+    const student = await getVisibleStudent(env, session, Number(studentResetMatch[1]));
+    if (!student) return json({ error: "Estudiante no encontrado" }, 404);
+    if (!canManageStudent(session, student)) return json({ error: "No autorizado para restablecer este estudiante" }, 403);
     const pass = tempPassword();
     const salt = randomHex();
     const hash = await hashPassword(pass, salt);
-    await env.DB.prepare("UPDATE students SET password_hash = ?, salt = ? WHERE id = ?")
-      .bind(hash, salt, studentResetMatch[1]).run();
+    await env.DB.prepare(
+      "UPDATE students SET password_hash = ?, salt = ?, session_version = COALESCE(session_version, 1) + 1 WHERE id = ?"
+    ).bind(hash, salt, student.id).run();
     return json({ ok: true, password: pass });
   }
 
   // ---------- INSCRIPCIONES ----------
   if (path === "/enrollments" && method === "POST") {
     const b = await request.json().catch(() => ({}));
+    const courseId = intId(b.course_id);
+    const studentId = intId(b.student_id);
+    if (!courseId || !studentId) return json({ error: "Curso o estudiante inválido" }, 400);
+    const course = await getVisibleCourse(env, session, courseId);
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
+    if (!canManageCourse(session, course)) return json({ error: "No autorizado para inscribir en este curso" }, 403);
+    if (!course.activo) return json({ error: "No se puede inscribir en un curso archivado" }, 400);
+    const student = await getVisibleStudent(env, session, studentId);
+    if (!student) return json({ error: "Estudiante no encontrado" }, 404);
+    if (!student.activo) return json({ error: "No se puede inscribir a un estudiante archivado" }, 400);
     try {
       const r = await env.DB.prepare("INSERT INTO enrollments (student_id, course_id) VALUES (?, ?)")
-        .bind(b.student_id, b.course_id).run();
+        .bind(studentId, courseId).run();
       return json({ id: r.meta.last_row_id });
     } catch (e) {
       return json({ error: "El estudiante ya está inscrito en ese curso" }, 400);
@@ -410,56 +861,162 @@ async function handleApi(request, env, url) {
   }
   const enrollDeleteMatch = path.match(/^\/enrollments\/(\d+)$/);
   if (enrollDeleteMatch && method === "DELETE") {
-    await env.DB.prepare("DELETE FROM enrollments WHERE id = ?").bind(enrollDeleteMatch[1]).run();
+    const enrollment = await env.DB.prepare(
+      "SELECT e.id, e.course_id FROM enrollments e WHERE e.id = ?"
+    ).bind(enrollDeleteMatch[1]).first();
+    if (!enrollment) return json({ error: "Inscripción no encontrada" }, 404);
+    const course = await getVisibleCourse(env, session, enrollment.course_id);
+    if (!course) return json({ error: "No autorizado" }, 403);
+    if (!canManageCourse(session, course)) return json({ error: "No autorizado para modificar este curso" }, 403);
+    await env.DB.prepare("DELETE FROM enrollments WHERE id = ?").bind(enrollment.id).run();
     return json({ ok: true });
   }
   const courseStudentsMatch = path.match(/^\/courses\/(\d+)\/students$/);
   if (courseStudentsMatch && method === "GET") {
+    const course = await getVisibleCourse(env, session, Number(courseStudentsMatch[1]));
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
     const { results } = await env.DB.prepare(
-      `SELECT e.id AS enrollment_id, s.id AS student_id, s.nombre, s.documento
+      `SELECT e.id AS enrollment_id, s.id AS student_id, s.nombre, s.documento, s.activo
        FROM enrollments e JOIN students s ON s.id = e.student_id
-       WHERE e.course_id = ? ORDER BY s.nombre`
-    ).bind(courseStudentsMatch[1]).all();
+       WHERE e.course_id = ? AND s.activo = 1 ORDER BY s.nombre`
+    ).bind(course.id).all();
     return json(results);
   }
 
   // ---------- ASISTENCIA ----------
   if (path === "/attendance" && method === "POST") {
     const b = await request.json().catch(() => ({}));
-    if (!b.fecha || !Array.isArray(b.registros)) return json({ error: "Datos incompletos" }, 400);
-    const stmts = b.registros.map((r) =>
-      env.DB.prepare(
-        `INSERT INTO attendance (enrollment_id, fecha, estado) VALUES (?, ?, ?)
-         ON CONFLICT(enrollment_id, fecha) DO UPDATE SET estado = excluded.estado`
-      ).bind(r.enrollment_id, b.fecha, r.estado)
-    );
-    if (stmts.length) await env.DB.batch(stmts);
-    return json({ ok: true, guardados: stmts.length });
+    if (!isValidDate(b.fecha) || !Array.isArray(b.registros) || !b.registros.length) {
+      return json({ error: "Datos incompletos o fecha inválida" }, 400);
+    }
+    if (b.registros.length > MAX_ATTENDANCE_BATCH) {
+      return json({ error: `No se pueden guardar más de ${MAX_ATTENDANCE_BATCH} registros a la vez` }, 400);
+    }
+
+    const registros = [];
+    const seen = new Set();
+    for (const item of b.registros) {
+      const enrollmentId = intId(item.enrollment_id);
+      const estado = String(item.estado || "");
+      if (!enrollmentId || !ESTADOS.has(estado)) return json({ error: "Registro de asistencia inválido" }, 400);
+      if (seen.has(enrollmentId)) return json({ error: "Hay inscripciones duplicadas en la solicitud" }, 400);
+      seen.add(enrollmentId);
+      registros.push({ enrollmentId, estado });
+    }
+
+    const placeholders = registros.map(() => "?").join(",");
+    const ids = registros.map((r) => r.enrollmentId);
+    const { results: enrollments } = await env.DB.prepare(
+      `SELECT e.id, e.course_id, c.teacher_id, c.activo
+       FROM enrollments e JOIN courses c ON c.id = e.course_id
+       WHERE e.id IN (${placeholders})`
+    ).bind(...ids).all();
+    if (enrollments.length !== registros.length) return json({ error: "Una inscripción no existe" }, 400);
+
+    const enrollmentMap = new Map(enrollments.map((e) => [e.id, e]));
+    for (const e of enrollments) {
+      if (!canAccessCourse(session, e)) return json({ error: "No autorizado para modificar uno de los cursos" }, 403);
+      if (!e.activo) return json({ error: "No se puede modificar la asistencia de un curso archivado" }, 400);
+    }
+
+    const { results: existing } = await env.DB.prepare(
+      `SELECT enrollment_id, estado FROM attendance
+       WHERE fecha = ? AND enrollment_id IN (${placeholders})`
+    ).bind(b.fecha, ...ids).all();
+    const previous = new Map(existing.map((r) => [r.enrollment_id, r.estado]));
+
+    const actor = actorFromSession(session);
+    const statements = [];
+    let cambios = 0;
+    for (const r of registros) {
+      const enrollment = enrollmentMap.get(r.enrollmentId);
+      const oldState = previous.has(r.enrollmentId) ? previous.get(r.enrollmentId) : null;
+      if (oldState !== r.estado) {
+        cambios++;
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO attendance_audit
+             (attendance_id, enrollment_id, course_id, fecha, estado_anterior, estado_nuevo, origen, actor_rol, actor_id, actor_nombre)
+             VALUES (NULL, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)`
+          ).bind(r.enrollmentId, enrollment.course_id, b.fecha, oldState, r.estado, actor.rol, actor.id, actor.nombre)
+        );
+      }
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO attendance
+             (enrollment_id, fecha, estado, origen, marcado_por_rol, marcado_por_id, marcado_por_nombre, updated_at)
+           VALUES (?, ?, ?, 'manual', ?, ?, ?, datetime('now'))
+           ON CONFLICT(enrollment_id, fecha) DO UPDATE SET
+             estado = excluded.estado,
+             origen = excluded.origen,
+             marcado_por_rol = excluded.marcado_por_rol,
+             marcado_por_id = excluded.marcado_por_id,
+             marcado_por_nombre = excluded.marcado_por_nombre,
+             updated_at = excluded.updated_at`
+        ).bind(r.enrollmentId, b.fecha, r.estado, actor.rol, actor.id, actor.nombre)
+      );
+    }
+    await env.DB.batch(statements);
+    return json({ ok: true, guardados: registros.length, cambios });
   }
+
   if (path === "/attendance" && method === "GET") {
-    const courseId = url.searchParams.get("course_id");
+    const courseId = intId(url.searchParams.get("course_id"));
     const fecha = url.searchParams.get("fecha");
-    if (!courseId || !fecha) return json({ error: "Falta course_id o fecha" }, 400);
+    if (!courseId || !isValidDate(fecha)) return json({ error: "Curso o fecha inválidos" }, 400);
+    const course = await getVisibleCourse(env, session, courseId);
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
     const { results } = await env.DB.prepare(
-      `SELECT e.id AS enrollment_id, s.nombre, s.documento, a.estado
+      `SELECT e.id AS enrollment_id, s.nombre, s.documento, a.estado,
+              a.origen, a.marcado_por_nombre, a.updated_at
        FROM enrollments e
        JOIN students s ON s.id = e.student_id
        LEFT JOIN attendance a ON a.enrollment_id = e.id AND a.fecha = ?
-       WHERE e.course_id = ? ORDER BY s.nombre`
-    ).bind(fecha, courseId).all();
+       WHERE e.course_id = ? AND s.activo = 1 ORDER BY s.nombre`
+    ).bind(fecha, course.id).all();
     return json(results);
   }
+
   const historyMatch = path.match(/^\/courses\/(\d+)\/history$/);
   if (historyMatch && method === "GET") {
+    const course = await getVisibleCourse(env, session, Number(historyMatch[1]));
+    if (!course) return json({ error: "Curso no encontrado" }, 404);
+
+    const desde = url.searchParams.get("desde");
+    const hasta = url.searchParams.get("hasta");
+    if (desde && !isValidDate(desde)) return json({ error: "Fecha inicial inválida" }, 400);
+    if (hasta && !isValidDate(hasta)) return json({ error: "Fecha final inválida" }, 400);
+    if (desde && hasta && desde > hasta) return json({ error: "El rango de fechas es inválido" }, 400);
+
+    const limitRaw = Number(url.searchParams.get("limit"));
+    const offsetRaw = Number(url.searchParams.get("offset"));
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_HISTORY) : 100;
+    const offset = Number.isInteger(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+
+    const conditions = ["e.course_id = ?"];
+    const binds = [course.id];
+    if (desde) { conditions.push("a.fecha >= ?"); binds.push(desde); }
+    if (hasta) { conditions.push("a.fecha <= ?"); binds.push(hasta); }
+    const where = conditions.join(" AND ");
+
+    const countRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS total
+       FROM attendance a
+       JOIN enrollments e ON e.id = a.enrollment_id
+       WHERE ${where}`
+    ).bind(...binds).first();
+
     const { results } = await env.DB.prepare(
-      `SELECT s.nombre, a.fecha, a.estado
+      `SELECT s.nombre, a.fecha, a.estado, a.origen, a.marcado_por_nombre, a.updated_at
        FROM attendance a
        JOIN enrollments e ON e.id = a.enrollment_id
        JOIN students s ON s.id = e.student_id
-       WHERE e.course_id = ?
-       ORDER BY a.fecha DESC, s.nombre`
-    ).bind(historyMatch[1]).all();
-    return json(results);
+       WHERE ${where}
+       ORDER BY a.fecha DESC, s.nombre
+       LIMIT ? OFFSET ?`
+    ).bind(...binds, limit, offset).all();
+
+    return json({ items: results, total: countRow ? countRow.total : 0, limit, offset });
   }
 
   return json({ error: "Ruta no encontrada" }, 404);
@@ -472,7 +1029,8 @@ export default {
       try {
         return await handleApi(request, env, url);
       } catch (err) {
-        return json({ error: "Error interno", detalle: String(err) }, 500);
+        console.error("Error interno en la API", err);
+        return json({ error: "Error interno del servidor" }, 500);
       }
     }
     return new Response(HTML_PAGE, {
@@ -480,7 +1038,6 @@ export default {
     });
   },
 };
-
 
 // ==========================================================
 // FRONTEND (HTML + CSS + JS embebido)
@@ -675,6 +1232,12 @@ const HTML_PAGE = `<!DOCTYPE html>
   .qrbox .side{flex:1;min-width:220px}
   .qrbox .side p{margin-bottom:10px}
   .qrbox input{font-size:12px;color:var(--muted);background:#fff}
+  .qrbox .qrimg{border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff;line-height:0}
+  .qrbox .qrimg svg{width:200px;height:200px;display:block}
+  tr.archivado td{opacity:.55}
+  .filtro-check{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:500;cursor:pointer}
+  .filtro-check input{width:15px;height:15px;accent-color:var(--brand)}
+  dialog.wide{max-width:520px}
   .curso-est{padding:15px 0;border-bottom:1px solid var(--line)}
   .curso-est:last-child{border-bottom:0;padding-bottom:0}
   .curso-est .head{display:flex;justify-content:space-between;gap:10px;margin-bottom:9px;font-weight:600;font-size:14px}
@@ -900,7 +1463,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
       <div class="sidebar-foot">
         <div class="foot-card"><span>Plan gratuito</span><small>Cloudflare Workers · D1</small></div>
-        <span class="version">v3.0</span>
+        <span class="version">v4.0</span>
       </div>
     </aside>
     <div class="sidebar-scrim" id="sidebarScrim" onclick="closeMenu()"></div>
@@ -948,12 +1511,15 @@ const HTML_PAGE = `<!DOCTYPE html>
               <div class="field"><label for="cursoNombre">Nombre</label><input id="cursoNombre" placeholder="Ej. Matemáticas 10A"></div>
               <div class="field"><label for="cursoDesc">Descripción (opcional)</label><input id="cursoDesc" placeholder="Ej. Grupo de la mañana"></div>
             </div>
+            <div class="field hidden" id="cursoDocenteWrap"><label for="cursoDocente">Docente responsable (opcional)</label><select id="cursoDocente"></select></div>
             <button type="button" class="btn" onclick="crearCurso()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Agregar curso</button>
           </section>
 
           <section class="card">
-            <div class="card-head"><div><h2>Cursos registrados</h2><p class="muted">Listado de cursos disponibles en el sistema.</p></div></div>
-            <div class="tw"><table><thead><tr><th>Nombre</th><th>Descripción</th><th></th></tr></thead><tbody id="listaCursos"></tbody></table></div>
+            <div class="card-head"><div><h2>Cursos registrados</h2><p class="muted">Listado de cursos disponibles en el sistema.</p></div>
+              <label class="filtro-check"><input type="checkbox" id="verCursosArchivados" onchange="cargarCursos()"> Mostrar archivados</label>
+            </div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Descripción</th><th>Docente</th><th></th></tr></thead><tbody id="listaCursos"></tbody></table></div>
           </section>
         </section>
 
@@ -968,12 +1534,15 @@ const HTML_PAGE = `<!DOCTYPE html>
               <div class="field"><label for="estEmail">Email (opcional)</label><input id="estEmail" type="email" placeholder="estudiante@correo.com"></div>
               <div class="field"><label for="estTel">Teléfono (opcional)</label><input id="estTel" placeholder="Número de contacto"></div>
             </div>
+            <div class="field hidden" id="estDocenteWrap"><label for="estDocente">Docente responsable (opcional)</label><select id="estDocente"></select></div>
             <button type="button" class="btn" onclick="crearEstudiante()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Agregar estudiante</button>
           </section>
 
           <section class="card">
-            <div class="card-head"><div><h2>Estudiantes registrados</h2><p class="muted">Si un estudiante olvidó su contraseña, usa "Restablecer clave": se genera una clave temporal que debes entregarle y luego él la cambia desde su perfil.</p></div></div>
-            <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th>Cuenta</th><th></th></tr></thead><tbody id="listaEstudiantes"></tbody></table></div>
+            <div class="card-head"><div><h2>Estudiantes registrados</h2><p class="muted">Si un estudiante olvidó su contraseña, usa "Restablecer clave": se genera una clave temporal que debes entregarle y luego él la cambia desde su perfil.</p></div>
+              <label class="filtro-check"><input type="checkbox" id="verEstudiantesArchivados" onchange="cargarEstudiantes()"> Mostrar archivados</label>
+            </div>
+            <div class="tw"><table><thead><tr><th>Nombre</th><th>Documento</th><th>Docente</th><th>Cuenta</th><th></th></tr></thead><tbody id="listaEstudiantes"></tbody></table></div>
           </section>
         </section>
 
@@ -1029,9 +1598,18 @@ const HTML_PAGE = `<!DOCTYPE html>
 
         <section id="tab-historial" class="tab-panel hidden">
           <section class="card">
-            <div class="card-head"><div><h2>Historial de asistencia</h2><p class="muted">Consulta los registros guardados por curso, ordenados por fecha.</p></div></div>
-            <div class="field"><label for="histCurso">Curso</label><select id="histCurso" onchange="cargarHistorial()"></select></div>
-            <div class="tw"><table><thead><tr><th>Estudiante</th><th>Fecha</th><th>Estado</th></tr></thead><tbody id="listaHistorial"></tbody></table></div>
+            <div class="card-head"><div><h2>Historial de asistencia</h2><p class="muted">Consulta los registros guardados por curso, con filtros por fecha y datos de auditoría.</p></div></div>
+            <div class="row">
+              <div class="field"><label for="histCurso">Curso</label><select id="histCurso" onchange="cargarHistorial()"></select></div>
+              <div class="field"><label for="histDesde">Desde (opcional)</label><input type="date" id="histDesde"></div>
+              <div class="field"><label for="histHasta">Hasta (opcional)</label><input type="date" id="histHasta"></div>
+              <div class="field" style="flex:0 0 auto;align-self:flex-end"><button type="button" class="btn" onclick="cargarHistorial()">Filtrar</button></div>
+            </div>
+            <div class="tw"><table><thead><tr><th>Estudiante</th><th>Fecha</th><th>Estado</th><th>Origen</th><th>Registrado por</th></tr></thead><tbody id="listaHistorial"></tbody></table></div>
+            <div class="actions">
+              <button type="button" class="btn ghost" id="btnMasHistorial" onclick="masHistorial()">Cargar más</button>
+              <span class="muted" id="histTotal"></span>
+            </div>
           </section>
         </section>
 
@@ -1064,12 +1642,26 @@ const HTML_PAGE = `<!DOCTYPE html>
   <button type="button" class="btn block" onclick="document.getElementById('dlg').close()">Entendido</button>
 </dialog>
 
+<dialog id="dlgEditar" class="wide">
+  <h2 id="editTitulo">Editar</h2>
+  <form onsubmit="guardarEdicion();return false">
+    <div id="editCampos"></div>
+    <div id="editMsg" class="msg"></div>
+    <div class="actions">
+      <button type="submit" class="btn">Guardar cambios</button>
+      <button type="button" class="btn ghost" onclick="document.getElementById('dlgEditar').close()">Cancelar</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 var ROLE = localStorage.getItem('asistencia_role') || '';
-var API_KEY = localStorage.getItem('asistencia_key') || '';
 var TOKEN = localStorage.getItem('asistencia_token') || '';
 var NOMBRE = localStorage.getItem('asistencia_nombre') || '';
-var courses = [], students = [];
+var MY_ID = null;
+var courses = [], students = [], docentes = [];
+var histOffset = 0;
+var EDIT = null;
 var estados = ['presente','ausente','tarde','justificado'];
 var P = new URLSearchParams(location.search);
 var CHECKIN = P.get('checkin');
@@ -1117,7 +1709,6 @@ function closeMenu(){
   $('sidebarScrim').classList.remove('open');
 }
 function authHeaders(){
-  if (ROLE === 'admin') return { 'X-API-Key': API_KEY };
   if (ROLE === 'docente' || ROLE === 'estudiante') return { 'Authorization': 'Bearer ' + TOKEN };
   return {};
 }
@@ -1141,15 +1732,18 @@ async function post(path, body){
 // ---------- Sesión ----------
 function limpiarSesion(){
   ['asistencia_role','asistencia_key','asistencia_token','asistencia_nombre'].forEach(function(k){ localStorage.removeItem(k); });
-  ROLE = ''; API_KEY = ''; TOKEN = ''; NOMBRE = '';
+  ROLE = ''; TOKEN = ''; NOMBRE = ''; MY_ID = null;
 }
-function cerrarSesion(){ limpiarSesion(); location.href = location.pathname; }
-function guardarSesion(role, token, key, nombre){
-  ROLE = role; TOKEN = token || ''; API_KEY = key || ''; NOMBRE = nombre || '';
+async function cerrarSesion(){
+  try { await fetch('/api/logout', { method:'POST' }); } catch (e) {}
+  limpiarSesion(); location.href = location.pathname;
+}
+function guardarSesion(role, token, nombre){
+  ROLE = role; TOKEN = token || ''; NOMBRE = nombre || '';
   localStorage.setItem('asistencia_role', role);
   if (token) localStorage.setItem('asistencia_token', token); else localStorage.removeItem('asistencia_token');
-  if (key) localStorage.setItem('asistencia_key', key); else localStorage.removeItem('asistencia_key');
   if (nombre) localStorage.setItem('asistencia_nombre', nombre); else localStorage.removeItem('asistencia_nombre');
+  localStorage.removeItem('asistencia_key');
 }
 
 // ---------- Pantalla de acceso ----------
@@ -1205,27 +1799,32 @@ async function mostrarAuth(){
   }
 }
 
-async function entrarComo(role){
+async function entrarComo(role, id){
   if (role === 'estudiante') return mostrarEstudiante();
+  if (id) MY_ID = id;
   ver('app');
   $('tabBtnDocentes').classList.toggle('hidden', role !== 'admin');
+  ['cursoDocenteWrap','estDocenteWrap'].forEach(function(x){ $(x).classList.toggle('hidden', role !== 'admin'); });
   var display = role === 'admin' ? 'Administrador' : (NOMBRE || 'Docente');
   $('quien').textContent = display;
   $('quienRol').textContent = role === 'admin' ? 'Administrador' : 'Docente';
   $('avatar').textContent = role === 'admin' ? 'A' : inicial(display);
   $('todayLabel').textContent = fechaLarga();
+  if (role === 'docente' && !MY_ID) {
+    try { var s = await api('/session'); MY_ID = s.id; } catch (e) {}
+  }
   initApp();
 }
 
 async function login(){
   var key = $('apiKeyInput').value;
   var d = await post('/login', { apiKey: key });
-  if (d.ok) { guardarSesion('admin', '', key, 'Administrador'); entrarComo('admin'); }
-  else msg('Clave incorrecta', 'bad');
+  if (d.ok) { guardarSesion('admin', '', 'Administrador'); entrarComo('admin'); }
+  else msg(d.error || 'Clave incorrecta', 'bad');
 }
 async function loginDocente(){
   var d = await post('/login-docente', { email: $('docenteEmail').value, password: $('docentePass').value });
-  if (d.ok) { guardarSesion('docente', d.token, '', d.nombre); entrarComo('docente'); }
+  if (d.ok) { guardarSesion('docente', d.token, d.nombre); entrarComo('docente'); }
   else msg(d.error || 'No se pudo iniciar sesión', 'bad');
 }
 async function registrarDocente(){
@@ -1233,12 +1832,12 @@ async function registrarDocente(){
     nombre: $('docRegNombre').value.trim(), email: $('docRegEmail').value.trim(),
     password: $('docRegPass').value, codigo: $('docRegCodigo').value.trim()
   });
-  if (d.ok) { guardarSesion('docente', d.token, '', d.nombre); entrarComo('docente'); }
+  if (d.ok) { guardarSesion('docente', d.token, d.nombre); entrarComo('docente'); }
   else msg(d.error || 'No se pudo registrar', 'bad');
 }
 async function loginEstudiante(){
   var d = await post('/login-estudiante', { documento: $('estLoginDoc').value.trim(), password: $('estLoginPass').value });
-  if (d.ok) { guardarSesion('estudiante', d.token, '', d.nombre); entrarComo('estudiante'); }
+  if (d.ok) { guardarSesion('estudiante', d.token, d.nombre); entrarComo('estudiante'); }
   else msg(d.error || 'No se pudo iniciar sesión', 'bad');
 }
 async function registrarEstudiante(){
@@ -1248,7 +1847,7 @@ async function registrarEstudiante(){
     nombre: $('estRegNombre').value.trim(), documento: $('estRegDoc').value.trim(),
     email: $('estRegEmail').value.trim(), password: p1
   });
-  if (d.ok) { guardarSesion('estudiante', d.token, '', d.nombre); entrarComo('estudiante'); }
+  if (d.ok) { guardarSesion('estudiante', d.token, d.nombre); entrarComo('estudiante'); }
   else msg(d.error || 'No se pudo registrar', 'bad');
 }
 
@@ -1261,7 +1860,9 @@ async function mostrarEstudiante(){
   try {
     if (CHECKIN) {
       var d = await api('/attendance/self', { method:'POST', body: JSON.stringify({ token: CHECKIN }) });
-      flash('Asistencia registrada: quedaste presente en ' + d.curso + ' el ' + d.fecha + '.', 'ok');
+      flash(d.ya
+        ? 'Tu asistencia ya estaba registrada como ' + d.estado + ' en ' + d.curso + ' el ' + d.fecha + '.'
+        : 'Asistencia registrada: quedaste presente en ' + d.curso + ' el ' + d.fecha + '.', 'ok');
     } else if (REGISTRO && REGISTRO !== '1') {
       var e = await api('/enroll/self', { method:'POST', body: JSON.stringify({ token: REGISTRO }) });
       flash(e.ya ? 'Ya estabas inscrito en ' + e.curso + '.' : 'Listo: quedaste inscrito en ' + e.curso + '.', 'ok');
@@ -1300,7 +1901,8 @@ async function cambiarClave(){
   var n1 = $('pwNueva').value, n2 = $('pwNueva2').value;
   if (n1 !== n2) { m.textContent = 'Las contraseñas nuevas no coinciden'; m.className = 'msg bad'; return; }
   try {
-    await api('/me/password', { method:'POST', body: JSON.stringify({ actual: $('pwActual').value, nueva: n1 }) });
+    var d = await api('/me/password', { method:'POST', body: JSON.stringify({ actual: $('pwActual').value, nueva: n1 }) });
+    if (d.token) guardarSesion('estudiante', d.token, NOMBRE);
     m.textContent = 'Contraseña actualizada'; m.className = 'msg ok';
     ['pwActual','pwNueva','pwNueva2'].forEach(function(id){ $(id).value = ''; });
   } catch (e) { m.textContent = e.message; m.className = 'msg bad'; }
@@ -1321,20 +1923,28 @@ document.querySelectorAll('#tabsNav button').forEach(function(btn){
 });
 async function initApp(){
   $('asisFecha').value = hoyLocal();
+  if (ROLE === 'admin') await cargarDocentes();
   await Promise.all([cargarCursos(), cargarEstudiantes()]);
-  if (ROLE === 'admin') cargarDocentes();
 }
 function mostrarClave(texto, clave){
   $('dlgTexto').textContent = texto; $('dlgClave').textContent = clave; $('dlg').showModal();
 }
 
 // ---------- QR ----------
-function mostrarQR(id, url, nota){
-  var img = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=4&data=' + encodeURIComponent(url);
-  $(id).innerHTML = '<div class="qrbox"><img src="' + img + '" width="200" height="200" alt="Código QR">' +
+async function mostrarQR(id, url, nota){
+  var cont = $(id);
+  cont.innerHTML = '<div class="qrbox"><div class="qrimg muted">Generando QR…</div>' +
     '<div class="side"><p class="muted">' + esc(nota) + '</p>' +
     '<input readonly value="' + esc(url) + '" onclick="this.select()">' +
     '<div class="actions"><button class="btn ghost sm" data-url="' + esc(url) + '" onclick="copiar(this)">Copiar enlace</button></div></div></div>';
+  try {
+    var d = await api('/qr', { method:'POST', body: JSON.stringify({ data: url }) });
+    var img = cont.querySelector('.qrimg');
+    if (img) { img.classList.remove('muted'); img.innerHTML = d.svg; }
+  } catch (e) {
+    var fallo = cont.querySelector('.qrimg');
+    if (fallo) { fallo.classList.remove('muted'); fallo.textContent = e.message; }
+  }
 }
 function copiar(btn){
   if (navigator.clipboard) navigator.clipboard.writeText(btn.dataset.url);
@@ -1362,54 +1972,159 @@ async function generarQRRegistro(conCurso){
 }
 
 // ---------- Cursos ----------
+function puedeCurso(c){ return ROLE === 'admin' || (c.teacher_id != null && Number(c.teacher_id) === Number(MY_ID)); }
+function puedeEstudiante(s){ return ROLE === 'admin' || (s.teacher_id != null && Number(s.teacher_id) === Number(MY_ID)); }
+function llenarSelectDocentes(){
+  var opts = '<option value="">Institucional (visible para todos)</option>' + docentes.map(function(d){
+    return '<option value="' + d.id + '">' + esc(d.nombre) + '</option>';
+  }).join('');
+  ['cursoDocente','estDocente'].forEach(function(id){ if ($(id)) $(id).innerHTML = opts; });
+}
+function opcionesDocentes(actual){
+  return '<option value="">Institucional (visible para todos)</option>' + docentes.map(function(d){
+    return '<option value="' + d.id + '"' + (Number(actual) === Number(d.id) ? ' selected' : '') + '>' + esc(d.nombre) + '</option>';
+  }).join('');
+}
 async function cargarCursos(){
   courses = await api('/courses');
-  $('statCursos').textContent = courses.length;
-  $('listaCursos').innerHTML = courses.map(function(c){
-    return '<tr><td><strong>' + esc(c.nombre) + '</strong></td><td class="muted">' + esc(c.descripcion || '—') + '</td>' +
-      '<td class="acc"><button class="btn danger sm" onclick="borrarCurso(' + c.id + ')">Eliminar</button></td></tr>';
-  }).join('') || '<tr><td class="muted" colspan="3">Aún no hay cursos. Crea el primero arriba.</td></tr>';
-  var opts = courses.map(function(c){ return '<option value="' + c.id + '">' + esc(c.nombre) + '</option>'; }).join('');
+  var verArch = $('verCursosArchivados').checked;
+  var visibles = courses.filter(function(c){ return verArch || c.activo; });
+  $('statCursos').textContent = courses.filter(function(c){ return c.activo; }).length;
+  $('listaCursos').innerHTML = visibles.map(function(c){
+    var acciones = '';
+    if (puedeCurso(c)) {
+      acciones = '<button class="btn ghost sm" onclick="abrirEditarCurso(' + c.id + ')">Editar</button>' +
+        (c.activo
+          ? '<button class="btn danger sm" onclick="archivarCurso(' + c.id + ')">Archivar</button>'
+          : '<button class="btn sm" onclick="restaurarCurso(' + c.id + ')">Restaurar</button>');
+    }
+    return '<tr class="' + (c.activo ? '' : 'archivado') + '"><td><strong>' + esc(c.nombre) + '</strong>' +
+      (c.activo ? '' : ' <span class="badge b-no">Archivado</span>') + '</td>' +
+      '<td class="muted">' + esc(c.descripcion || '—') + '</td>' +
+      '<td class="muted">' + esc(c.docente || 'Institucional') + '</td>' +
+      '<td class="acc">' + acciones + '</td></tr>';
+  }).join('') || '<tr><td class="muted" colspan="4">Aún no hay cursos. Crea el primero arriba.</td></tr>';
+  var activos = courses.filter(function(c){ return c.activo; });
+  var opts = activos.map(function(c){ return '<option value="' + c.id + '">' + esc(c.nombre) + '</option>'; }).join('');
   ['inscCurso','verCurso','asisCurso','histCurso'].forEach(function(id){ $(id).innerHTML = opts; });
-  if (courses.length) { cargarInscritos(); cargarAsistencia(); cargarHistorial(); }
+  if (activos.length) { cargarInscritos(); cargarAsistencia(); cargarHistorial(); }
+  else {
+    ['listaInscritos','listaAsistencia','listaHistorial'].forEach(function(id){ if ($(id)) $(id).innerHTML = ''; });
+    if ($('histTotal')) $('histTotal').textContent = '';
+  }
 }
 async function crearCurso(){
   var nombre = $('cursoNombre').value.trim();
   if (!nombre) return alert('Escribe un nombre de curso');
-  await api('/courses', { method:'POST', body: JSON.stringify({ nombre: nombre, descripcion: $('cursoDesc').value }) });
-  $('cursoNombre').value = ''; $('cursoDesc').value = '';
+  var body = { nombre: nombre, descripcion: $('cursoDesc').value };
+  if (ROLE === 'admin' && $('cursoDocente').value) body.teacher_id = $('cursoDocente').value;
+  await api('/courses', { method:'POST', body: JSON.stringify(body) });
+  $('cursoNombre').value = ''; $('cursoDesc').value = ''; $('cursoDocente').value = '';
   await cargarCursos();
 }
-async function borrarCurso(id){
-  if (!confirm('¿Eliminar este curso junto con sus inscripciones y asistencia?')) return;
+async function archivarCurso(id){
+  if (!confirm('¿Archivar este curso? Dejará de estar disponible para inscripciones y asistencia, pero su historial se conserva.')) return;
   await api('/courses/' + id, { method:'DELETE' }); await cargarCursos();
+}
+async function restaurarCurso(id){
+  await api('/courses/' + id, { method:'PATCH', body: JSON.stringify({ activo: true }) }); await cargarCursos();
 }
 
 // ---------- Estudiantes ----------
 async function cargarEstudiantes(){
   students = await api('/students');
-  $('statEstudiantes').textContent = students.length;
-  $('listaEstudiantes').innerHTML = students.map(function(s){
-    return '<tr><td><strong>' + esc(s.nombre) + '</strong></td><td class="muted">' + esc(s.documento || '—') + '</td>' +
-      '<td>' + (s.tiene_cuenta ? '<span class="badge b-si">Con cuenta</span>' : '<span class="badge b-no">Sin cuenta</span>') + '</td>' +
-      '<td class="acc"><button class="btn ghost sm" data-id="' + s.id + '" data-nombre="' + esc(s.nombre) + '" onclick="resetEst(this)">Restablecer clave</button>' +
-      '<button class="btn danger sm" onclick="borrarEstudiante(' + s.id + ')">Eliminar</button></td></tr>';
-  }).join('') || '<tr><td class="muted" colspan="4">Aún no hay estudiantes.</td></tr>';
-  $('inscEstudiante').innerHTML = students.map(function(s){ return '<option value="' + s.id + '">' + esc(s.nombre) + '</option>'; }).join('');
+  var verArch = $('verEstudiantesArchivados').checked;
+  var visibles = students.filter(function(s){ return verArch || s.activo; });
+  $('statEstudiantes').textContent = students.filter(function(s){ return s.activo; }).length;
+  $('listaEstudiantes').innerHTML = visibles.map(function(s){
+    var cuenta = s.tiene_cuenta ? '<span class="badge b-si">Con cuenta</span>' : '<span class="badge b-no">Sin cuenta</span>';
+    var acciones = '';
+    if (puedeEstudiante(s)) {
+      acciones = '<button class="btn ghost sm" data-id="' + s.id + '" data-nombre="' + esc(s.nombre) + '" onclick="resetEst(this)">Restablecer clave</button>' +
+        '<button class="btn ghost sm" onclick="abrirEditarEstudiante(' + s.id + ')">Editar</button>' +
+        (s.activo
+          ? '<button class="btn danger sm" onclick="archivarEstudiante(' + s.id + ')">Archivar</button>'
+          : '<button class="btn sm" onclick="restaurarEstudiante(' + s.id + ')">Restaurar</button>');
+    }
+    return '<tr class="' + (s.activo ? '' : 'archivado') + '"><td><strong>' + esc(s.nombre) + '</strong>' +
+      (s.activo ? '' : ' <span class="badge b-no">Archivado</span>') + '</td>' +
+      '<td class="muted">' + esc(s.documento || '—') + '</td>' +
+      '<td class="muted">' + esc(s.docente || 'Institucional') + '</td><td>' + cuenta + '</td>' +
+      '<td class="acc">' + acciones + '</td></tr>';
+  }).join('') || '<tr><td class="muted" colspan="5">Aún no hay estudiantes.</td></tr>';
+  var activos = students.filter(function(s){ return s.activo; });
+  $('inscEstudiante').innerHTML = activos.map(function(s){ return '<option value="' + s.id + '">' + esc(s.nombre) + '</option>'; }).join('');
 }
 async function crearEstudiante(){
   var nombre = $('estNombre').value.trim();
   if (!nombre) return alert('Escribe el nombre del estudiante');
+  var body = { nombre: nombre, documento: $('estDoc').value, email: $('estEmail').value, telefono: $('estTel').value };
+  if (ROLE === 'admin' && $('estDocente').value) body.teacher_id = $('estDocente').value;
   try {
-    await api('/students', { method:'POST', body: JSON.stringify({
-      nombre: nombre, documento: $('estDoc').value, email: $('estEmail').value, telefono: $('estTel').value }) });
+    await api('/students', { method:'POST', body: JSON.stringify(body) });
     ['estNombre','estDoc','estEmail','estTel'].forEach(function(id){ $(id).value = ''; });
+    $('estDocente').value = '';
     await cargarEstudiantes();
   } catch (e) { alert(e.message); }
 }
-async function borrarEstudiante(id){
-  if (!confirm('¿Eliminar este estudiante? También se borra su asistencia.')) return;
+async function archivarEstudiante(id){
+  if (!confirm('¿Archivar este estudiante? No aparecerá en las listas, pero su asistencia se conserva.')) return;
   await api('/students/' + id, { method:'DELETE' }); await cargarEstudiantes();
+}
+async function restaurarEstudiante(id){
+  await api('/students/' + id, { method:'PATCH', body: JSON.stringify({ activo: true }) }); await cargarEstudiantes();
+}
+
+// ---------- Edición de cursos y estudiantes ----------
+function abrirEditarCurso(id){
+  var c = courses.filter(function(x){ return Number(x.id) === Number(id); })[0];
+  if (!c) return;
+  EDIT = { tipo:'curso', id: c.id };
+  $('editTitulo').textContent = 'Editar curso';
+  var html = '<div class="field"><label for="editNombre">Nombre</label><input id="editNombre" value="' + esc(c.nombre) + '"></div>' +
+    '<div class="field"><label for="editDescripcion">Descripción</label><input id="editDescripcion" value="' + esc(c.descripcion || '') + '"></div>';
+  if (ROLE === 'admin') html += '<div class="field"><label for="editDocente">Docente responsable</label><select id="editDocente">' + opcionesDocentes(c.teacher_id) + '</select></div>';
+  html += '<label class="filtro-check"><input type="checkbox" id="editActivo"' + (c.activo ? ' checked' : '') + '> Curso activo</label>';
+  $('editCampos').innerHTML = html;
+  $('editMsg').textContent = '';
+  $('dlgEditar').showModal();
+}
+function abrirEditarEstudiante(id){
+  var s = students.filter(function(x){ return Number(x.id) === Number(id); })[0];
+  if (!s) return;
+  EDIT = { tipo:'estudiante', id: s.id };
+  $('editTitulo').textContent = 'Editar estudiante';
+  var html = '<div class="field"><label for="editNombre">Nombre completo</label><input id="editNombre" value="' + esc(s.nombre) + '"></div>' +
+    '<div class="row"><div class="field"><label for="editDocumento">Documento</label><input id="editDocumento" value="' + esc(s.documento || '') + '"></div>' +
+    '<div class="field"><label for="editTelefono">Teléfono</label><input id="editTelefono" value="' + esc(s.telefono || '') + '"></div></div>' +
+    '<div class="field"><label for="editEmail">Email</label><input id="editEmail" type="email" value="' + esc(s.email || '') + '"></div>';
+  if (ROLE === 'admin') html += '<div class="field"><label for="editDocente">Docente responsable</label><select id="editDocente">' + opcionesDocentes(s.teacher_id) + '</select></div>';
+  html += '<label class="filtro-check"><input type="checkbox" id="editActivo"' + (s.activo ? ' checked' : '') + '> Estudiante activo</label>';
+  $('editCampos').innerHTML = html;
+  $('editMsg').textContent = '';
+  $('dlgEditar').showModal();
+}
+async function guardarEdicion(){
+  var m = $('editMsg');
+  if (!EDIT) return;
+  try {
+    if (EDIT.tipo === 'curso') {
+      var bodyC = { nombre: $('editNombre').value.trim(), descripcion: $('editDescripcion').value, activo: $('editActivo').checked };
+      if (ROLE === 'admin') bodyC.teacher_id = $('editDocente').value || null;
+      await api('/courses/' + EDIT.id, { method:'PATCH', body: JSON.stringify(bodyC) });
+      $('dlgEditar').close();
+      await cargarCursos();
+    } else {
+      var bodyE = {
+        nombre: $('editNombre').value.trim(), documento: $('editDocumento').value,
+        email: $('editEmail').value, telefono: $('editTelefono').value, activo: $('editActivo').checked
+      };
+      if (ROLE === 'admin') bodyE.teacher_id = $('editDocente').value || null;
+      await api('/students/' + EDIT.id, { method:'PATCH', body: JSON.stringify(bodyE) });
+      $('dlgEditar').close();
+      await cargarEstudiantes();
+    }
+  } catch (e) { m.textContent = e.message; m.className = 'msg bad'; }
 }
 async function resetEst(btn){
   var nombre = btn.dataset.nombre;
@@ -1479,22 +2194,40 @@ async function guardarAsistencia(){
 }
 
 // ---------- Historial ----------
-async function cargarHistorial(){
+var ORIGEN_TEXTO = { qr:'QR', manual:'Manual' };
+async function cargarHistorial(reset){
   var courseId = $('histCurso').value;
   if (!courseId) return;
-  var list = await api('/courses/' + courseId + '/history');
-  $('listaHistorial').innerHTML = list.map(function(r){
-    return '<tr><td><strong>' + esc(r.nombre) + '</strong></td><td class="muted">' + esc(r.fecha) + '</td><td><span class="badge b-' + esc(r.estado) + '">' + esc(r.estado) + '</span></td></tr>';
-  }).join('') || '<tr><td class="muted" colspan="3">Sin registros todavía.</td></tr>';
+  if (reset !== false) histOffset = 0;
+  var q = '/courses/' + courseId + '/history?limit=100&offset=' + histOffset;
+  var desde = $('histDesde').value, hasta = $('histHasta').value;
+  if (desde) q += '&desde=' + encodeURIComponent(desde);
+  if (hasta) q += '&hasta=' + encodeURIComponent(hasta);
+  var d;
+  try { d = await api(q); }
+  catch (e) { $('histTotal').textContent = e.message; $('btnMasHistorial').classList.add('hidden'); return; }
+  var filas = d.items.map(function(r){
+    return '<tr><td><strong>' + esc(r.nombre) + '</strong></td><td class="muted">' + esc(r.fecha) + '</td>' +
+      '<td><span class="badge b-' + esc(r.estado) + '">' + esc(r.estado) + '</span></td>' +
+      '<td class="muted">' + esc(ORIGEN_TEXTO[r.origen] || r.origen || '—') + '</td>' +
+      '<td class="muted">' + esc(r.marcado_por_nombre || '—') + '</td></tr>';
+  }).join('');
+  if (histOffset === 0) $('listaHistorial').innerHTML = filas || '<tr><td class="muted" colspan="5">Sin registros para los filtros elegidos.</td></tr>';
+  else $('listaHistorial').insertAdjacentHTML('beforeend', filas);
+  histOffset += d.items.length;
+  $('histTotal').textContent = d.total ? ('Mostrando ' + histOffset + ' de ' + d.total) : 'Sin registros';
+  $('btnMasHistorial').classList.toggle('hidden', histOffset >= d.total);
 }
+function masHistorial(){ cargarHistorial(false); }
 
 // ---------- Docentes (solo administrador) ----------
 async function cargarDocentes(){
   if (ROLE !== 'admin') return;
-  var list = await api('/teachers');
+  docentes = await api('/teachers');
+  llenarSelectDocentes();
   $('statDocentesCard').classList.remove('hidden');
-  $('statDocentes').textContent = list.length;
-  $('listaDocentes').innerHTML = list.map(function(d){
+  $('statDocentes').textContent = docentes.length;
+  $('listaDocentes').innerHTML = docentes.map(function(d){
     return '<tr><td><strong>' + esc(d.nombre) + '</strong></td><td class="muted">' + esc(d.email) + '</td>' +
       '<td class="acc"><button class="btn ghost sm" data-id="' + d.id + '" data-nombre="' + esc(d.nombre) + '" onclick="resetDoc(this)">Restablecer clave</button>' +
       '<button class="btn danger sm" onclick="borrarDocente(' + d.id + ')">Eliminar</button></td></tr>';
@@ -1511,8 +2244,8 @@ async function crearDocente(){
   } catch (e) { m.textContent = e.message; m.className = 'msg bad'; }
 }
 async function borrarDocente(id){
-  if (!confirm('¿Eliminar este docente?')) return;
-  await api('/teachers/' + id, { method:'DELETE' }); await cargarDocentes();
+  if (!confirm('¿Eliminar este docente? Sus cursos y estudiantes pasarán a ser institucionales.')) return;
+  await api('/teachers/' + id, { method:'DELETE' }); await cargarDocentes(); await cargarCursos(); await cargarEstudiantes();
 }
 async function resetDoc(btn){
   var nombre = btn.dataset.nombre;
@@ -1525,17 +2258,23 @@ async function resetDoc(btn){
 
 // ---------- Arranque ----------
 (async function init(){
-  if (ROLE === 'estudiante' && TOKEN) return mostrarEstudiante();
-  // Si llegan por un QR, siempre mostramos el acceso de estudiante
+  localStorage.removeItem('asistencia_key');
   if (CHECKIN || REGISTRO) return mostrarAuth();
-  if (ROLE === 'admin' && API_KEY) {
-    var d = await post('/login', { apiKey: API_KEY });
-    if (d.ok) return entrarComo('admin');
-  } else if (ROLE === 'docente' && TOKEN) {
-    var r = await fetch('/api/courses', { headers: { 'Authorization': 'Bearer ' + TOKEN } });
-    if (r.ok) return entrarComo('docente');
+  if (ROLE && (ROLE === 'admin' || TOKEN)) {
+    try {
+      var r = await fetch('/api/session', { headers: authHeaders() });
+      if (r.ok) {
+        var d = await r.json();
+        if (d.role === ROLE) {
+          MY_ID = d.id || null;
+          if (d.nombre) { NOMBRE = d.nombre; localStorage.setItem('asistencia_nombre', NOMBRE); }
+          if (ROLE === 'estudiante') return mostrarEstudiante();
+          return entrarComo(ROLE, MY_ID);
+        }
+      }
+    } catch (e) {}
+    limpiarSesion();
   }
-  limpiarSesion();
   mostrarAuth();
 })();
 </script>
